@@ -79,9 +79,21 @@ function validateView(v, profile) {
   }
   return v;
 }
-function earnings(v) { return v.sheets.reduce((sum, s) => sum + Array.from({ length: s.weeks }, (_, w) => Math.max(0, weekDates(s, w).reduce((n, d) => { const m = s.marks[d], c = v.categories.find(c => c.id === m?.categoryId); return n + (c?.effect === 'CREDIT' ? m.amount : c?.effect === 'DEDUCT' ? -m.amount : 0); }, 0) - s.norms[w])).reduce((a, b) => a + b, 0), 0); }
+function weekCredit(v, s, w) { return weekDates(s, w).reduce((n, d) => { const m = s.marks[d], c = v.categories.find(c => c.id === m?.categoryId); return n + (c?.effect === 'CREDIT' ? m.amount : c?.effect === 'DEDUCT' ? -m.amount : 0); }, 0); }
+function earnings(v) { return v.sheets.reduce((sum, s) => sum + Array.from({ length: s.weeks }, (_, w) => Math.max(0, weekCredit(v, s, w) - s.norms[w])).reduce((a, b) => a + b, 0), 0); }
 function spent(v) { return v.sheets.reduce((n, s) => n + Object.values(s.marks).reduce((n, m) => n + (m.approved && v.categories.find(c => c.id === m.categoryId)?.effect === 'BONUS' ? m.amount : 0), 0), 0); }
+function refundUnusedBonuses(v, s, w) {
+  let remaining = Math.max(0, s.norms[w] - weekCredit(v, s, w));
+  for (const date of weekDates(s, w)) {
+    const m = s.marks[date]; if (!m?.approved || v.categories.find(c => c.id === m.categoryId)?.effect !== 'BONUS') continue;
+    const used = Math.min(m.amount, remaining); remaining -= used;
+    if (!used) delete s.marks[date]; else if (used !== m.amount) s.marks[date] = { ...m, amount: used };
+  }
+}
 function recalc(v) {
+  const before = spent(v);
+  for (const s of v.sheets) for (let w = 0; w < s.weeks; w++) refundUnusedBonuses(v, s, w);
+  v.balance += before - spent(v);
   for (const s of v.sheets) s.totals = Array.from({ length: s.weeks }, (_, w) => Math.min(s.norms[w], weekDates(s, w).reduce((n, d) => { const m = s.marks[d], c = v.categories.find(c => c.id === m?.categoryId); return n + (c?.effect === 'CREDIT' ? m.amount : c?.effect === 'DEDUCT' ? -m.amount : c?.effect === 'BONUS' && m.approved ? m.amount : 0); }, 0)));
   return v;
 }
@@ -95,14 +107,21 @@ function applyRequest(v, r) {
   const c = v.categories.find(c => c.id === r.categoryId), old = s.marks[r.date]; ensure(c, 'Категория удалена');
   ensure(r.amount === 0 || !c.deleted || old?.categoryId === c.id, 'Категория удалена преподавателем');
   if (old?.amount === r.amount && old?.categoryId === c.id && (c.effect !== 'BONUS' || old.approved)) return;
-  const base = v.balance - earnings(v) + spent(v), original = structuredClone(old);
+  const base = v.balance - earnings(v) + spent(v), original = s.marks;
+  s.marks = structuredClone(s.marks);
   if (r.amount === 0) delete s.marks[r.date]; else s.marks[r.date] = { amount: r.amount, categoryId: c.id, approved: c.effect === 'BONUS' };
+  if (r.amount > 0 && c.effect === 'BONUS') {
+    const other = weekDates(s, week).reduce((n, d) => { const m = s.marks[d]; return n + (d !== r.date && m?.approved && v.categories.find(c => c.id === m.categoryId)?.effect === 'BONUS' ? m.amount : 0); }, 0);
+    const room = Math.max(0, s.norms[week] - weekCredit(v, s, week) - other);
+    if (r.amount > room) { s.marks = original; throw new Error(`До нормы недели осталось ${room} пар. Бонусы сверх нормы не списываются`); }
+  }
+  refundUnusedBonuses(v, s, week);
   const nextBalance = base + earnings(v) - spent(v);
-  if (r.amount > 0 && c.effect === 'BONUS' && nextBalance < 0) { if (original) s.marks[r.date] = original; else delete s.marks[r.date]; throw new Error('Недостаточно бонусов для этой отметки'); }
+  if (r.amount > 0 && c.effect === 'BONUS' && nextBalance < 0) { s.marks = original; throw new Error('Недостаточно бонусов для этой отметки'); }
   v.balance = nextBalance; recalc(v);
 }
 function pendingView(profile) {
-  if (!profile?.view) return null; const v = structuredClone(profile.view);
+  if (!profile?.view) return null; const v = recalc(structuredClone(profile.view));
   for (const r of profile.feed.requests) if (!(r.id in v.receipts)) { try { applyRequest(v, r); } catch { /* Teacher receipts carry the final rejection reason. */ } }
   return recalc(v);
 }
@@ -374,8 +393,9 @@ function render() {
       selectedSheet = sheet.id; sheets.value = sheet.id; sheets.onchange = () => { selectedSheet = sheets.value; week = 0; render(); }; label.append(sheets); aside.append(label);
       week = Math.min(week, sheet.weeks - 1); const weeks = el('div', undefined, 'weeks'); weeks.setAttribute('aria-label', 'Недели');
       for (let w = 0; w < sheet.weeks; w++) { const b = button(String(w + 1), () => { week = w; render(); }, w === week ? 'week selected' : 'week'); b.setAttribute('aria-label', `Неделя ${w + 1}`); b.setAttribute('aria-pressed', String(w === week)); weeks.append(b); } aside.append(weeks);
-      const status = el('p', dirty ? 'Сохранено на устройстве. Ожидает отправки' : 'Отправлено на Диск', 'delivery'); status.setAttribute('role', 'status'); aside.append(status);
-      const awaiting = p.feed.requests.filter(r => !(r.id in p.view.receipts)).length; if (awaiting) aside.append(el('p', `Ожидает обработки: ${awaiting}`, 'muted'));
+      const awaiting = p.feed.requests.filter(r => !(r.id in p.view.receipts)).length;
+      const status = el('p', dirty ? 'Сохранено на устройстве. Ожидает отправки' : awaiting ? 'Отправлено преподавателю' : 'Синхронизировано', 'delivery'); status.setAttribute('role', 'status'); aside.append(status);
+      if (awaiting) aside.append(el('p', `Ожидает обработки: ${awaiting}`, 'muted'));
       const rejected = p.feed.requests.map(r => p.view.receipts[r.id]).filter(Boolean); if (rejected.length) aside.append(button('Есть отклонённая отметка', () => showError(rejected.at(-1)), 'text-button'));
       const days = el('section', undefined, 'days'); days.setAttribute('aria-label', `Посещаемость за неделю ${week + 1}`);
       const heading = el('div', undefined, 'week-heading'); heading.append(el('h2', `Неделя ${week + 1}`), el('span', `${sheet.totals[week]} / ${sheet.norms[week]}`, 'week-total')); days.append(heading);
