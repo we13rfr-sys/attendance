@@ -1,0 +1,1 @@
+{"name":"Посещаемость","short_name":"Посещаемость","lang":"ru","id":"./","start_url":"./","scope":"./","display":"standalone","background_color":"#f8fafc","theme_color":"#225a80","icons":[{"src":"./icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"},{"src":"./apple-touch-icon.png","sizes":"180x180","type":"image/png","purpose":"any"}]}
