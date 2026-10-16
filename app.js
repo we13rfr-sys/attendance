@@ -417,7 +417,7 @@ function render() {
     const rect = document.createElementNS(svg.namespaceURI, 'rect'); rect.setAttribute('width', '20'); rect.setAttribute('height', '20'); rect.setAttribute('rx', '4'); rect.setAttribute('fill', color); svg.append(rect); swatch.append(svg);
   }
 }
-function schedule(delay = 5000) { clearTimeout(timer); if (!document.hidden && exchange?.state.token) timer = setTimeout(poll, Math.max(delay, retryAt - Date.now())); }
+function schedule(delay = 2000) { clearTimeout(timer); if (!document.hidden && exchange?.state.token) timer = setTimeout(poll, Math.max(delay, retryAt - Date.now())); }
 async function poll() {
   if (document.hidden || working || !navigator.onLine || dialog.open) { schedule(); return; }
   polling = (async () => { try {

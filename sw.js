@@ -1,4 +1,4 @@
-const CACHE = 'attendance-student-c80b5b6519ec';
+const CACHE = 'attendance-student-4d08bc2baed5';
 const SHELL = ['./', './index.html', './style.css', './icon.svg', './apple-touch-icon.png', './manifest.webmanifest', './app.js'];
 self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting())));
 self.addEventListener('activate', event => event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key.startsWith('attendance-student-') && key !== CACHE).map(key => caches.delete(key)))).then(() => self.clients.claim())));
