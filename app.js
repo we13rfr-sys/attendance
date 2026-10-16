@@ -186,6 +186,11 @@ class Disk {
 class Exchange {
   constructor(vault, state) { this.vault = vault; this.state = state; this.disk = new Disk(state.token); }
   async save() { await this.vault.save(this.state); }
+  async requireLogin() {
+    const p = this.state.active;
+    if (p) this.state.saved = [p, ...this.state.saved.filter(old => old.peerId !== p.peerId)];
+    this.state.active = null; this.state.token = null; await this.save(); this.disk = new Disk(null);
+  }
   async restore() {
     if (this.state.active || !this.state.token) return;
     for (const profile of this.state.saved) {
@@ -255,8 +260,7 @@ class Exchange {
   async logout() {
     const p = this.state.active; if (p && await hash(JSON.stringify(p.feed)) !== p.feedHash) await this.sync();
     ensure(!p || await hash(JSON.stringify(p.feed)) === p.feedHash, 'Дождитесь отправки изменений перед выходом');
-    if (p) this.state.saved = [p, ...this.state.saved.filter(old => old.peerId !== p.peerId)];
-    this.state.token = null; this.state.active = null; delete this.state.oauth; await this.save(); this.disk = new Disk(null);
+    delete this.state.oauth; await this.requireLogin();
   }
 }
 
@@ -317,7 +321,7 @@ function themeMenu() {
 async function operate(fn, label = 'Подождите…') {
   if (working) return; working = true; overlay.querySelector('p').textContent = label; overlay.hidden = false; root.inert = true;
   try { if (polling) await polling; await fn(); retryAt = 0; }
-  catch (e) { if (e.retry) retryAt = Date.now() + e.retry; showError(e.message ?? 'Не удалось выполнить действие'); }
+  catch (e) { if (e.status === 401) await exchange.requireLogin(); if (e.retry) retryAt = Date.now() + e.retry; showError(e.message ?? 'Не удалось выполнить действие'); }
   finally { root.inert = false; working = false; overlay.hidden = true; await updateDirty(); render(); schedule(); }
 }
 async function updateDirty() { const p = exchange?.state.active; dirty = !!p && await hash(JSON.stringify(p.feed)) !== p.feedHash; }
@@ -422,7 +426,7 @@ async function poll() {
       const next = await exchange.invitation(groupUrl); if (JSON.stringify(next) !== JSON.stringify(group)) { group = next; render(); }
     }
     const before = JSON.stringify(exchange.state.active); await exchange.sync(); await updateDirty(); if (before !== JSON.stringify(exchange.state.active)) render();
-  } catch (e) { if (e.retry) retryAt = Date.now() + e.retry; showError(e.message); }
+  } catch (e) { if (e.status === 401) { await exchange.requireLogin(); render(); } if (e.retry) retryAt = Date.now() + e.retry; showError(e.message); }
   finally { schedule(); } })();
   await polling; polling = null;
 }
