@@ -3085,7 +3085,7 @@ function teacherInterface(api) {
     summary.append(el("p",`Выполнено ${stats.completed} / ${stats.norm} · осталось ${stats.remaining}`),el("p","Бонусы: "+teacherBalance(b,row.id)));
     main.append(summary);
     if(stats.categories.length) {
-      const breakdown=el("details",undefined,"category-breakdown");breakdown.append(el("summary","По категориям"));const list=el("dl",undefined,"category-statistics");
+      const breakdown=el("div",undefined,"category-breakdown");const list=el("dl",undefined,"category-statistics");
       for(const category of stats.categories)list.append(el("dt",category.name),el("dd",String(category.amount)));breakdown.append(list);summary.append(breakdown);
     }
     const days=el("section",undefined,"days");
@@ -3342,7 +3342,8 @@ function teacherInterface(api) {
       week = Math.max(0, Math.min(week, sheet.weeks - 1));
       if (detail) renderDetail(main, b);
       else {
-        main.append(selectors(b, sheet, week).firstElementChild);
+        const journalHeader=el("section",undefined,"journal-header");
+        journalHeader.append(selectors(b, sheet, week).firstElementChild);
         const statusRow = el("div", undefined, "table-status");
         const closed = month.weeks.every(ref=>b.sheets.find(s=>s.id===ref.sheetId).closedWeeks?.includes(ref.index));
         statusRow.append(
@@ -3364,7 +3365,7 @@ function teacherInterface(api) {
         );
         status.setAttribute("role", "status");
         statusRow.append(status);
-        main.append(statusRow);
+        journalHeader.append(statusRow);
         const tabs = el("nav", undefined, "tabs");
         tabs.setAttribute("aria-label", "Разделы группы");
         for (const [value, title] of [
@@ -3383,7 +3384,7 @@ function teacherInterface(api) {
           item.setAttribute("aria-current", tab === value ? "page" : "false");
           tabs.append(item);
         }
-        main.append(tabs);
+        journalHeader.append(tabs);main.append(journalHeader);
         if (tab === "journal") renderJournal(main, b, sheet);
         else {
           renderSettings(main, b, sheet);
