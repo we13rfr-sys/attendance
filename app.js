@@ -2970,7 +2970,7 @@ function teacherInterface(api) {
           open.append(name,counts);item.append(open,studentMenu(row));list.append(item);
         }
       } else {
-      const viewport=el("div",undefined,"attendance-scroll"), table=el("table",undefined,"attendance-grid");
+      const viewport=el("div",undefined,"attendance-scroll"), table=el("table",undefined,`attendance-grid${wholeSheet?" month-grid":""}`);
       viewport.tabIndex=0;viewport.setAttribute("aria-label",wholeSheet?"Посещаемость за месяц":"Посещаемость за неделю");
       const head=el("thead"), headRow=el("tr"), nameHeading=el("th","Студент");nameHeading.scope="col";headRow.append(nameHeading);
       const headings=wholeSheet?month.weeks.map(weekRange):weekDates(sheet,week).map((date,i)=>["Пн","Вт","Ср","Чт","Пт","Сб"][i]+" "+dateLabel(date,sheet.dateView));
@@ -2999,7 +2999,7 @@ function teacherInterface(api) {
           const cell=button("",()=>markEditor(row,sheet,date),"grid-mark");
           cell.setAttribute("aria-label",row.name+", "+dateLabel(date,sheet.dateView)+": "+(category?category.name+", "+mark.amount:"поставить отметку"));
           if(category) {const swatch=el("span",undefined,"swatch");swatch.style.backgroundColor="#"+category.color;cell.append(swatch,el("strong",String(mark.amount)),el("small",category.name));}
-          else cell.append(el("span","Отметить","muted"));td.append(cell);tr.append(td);
+          else {const add=icon("add");add.classList.add("grid-add");cell.append(add,el("span","Отметить","grid-empty-label muted"));}td.append(cell);tr.append(td);
         }
         body.append(tr);
       }

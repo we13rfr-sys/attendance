@@ -42,6 +42,21 @@
 @media(max-width:600px){.attendance-grid tr>:first-child{width:176px;min-width:176px}.student-name-link{font-size:.875rem}.grid-name{align-items:flex-start}.grid-counts{gap:2px 8px}.teacher-main{padding-inline:12px}}
 
 .grid-counts{align-items:center}.grid-counts .row-menu{margin-left:auto}
+.grid-add{display:none}.attendance-grid tbody tr:hover>*{background:var(--surface)}
+@media(max-width:599px){
+  .attendance-grid th,.attendance-grid td{width:88px;min-width:88px}
+  .attendance-grid.month-grid th,.attendance-grid.month-grid td{width:104px;min-width:104px}
+  .attendance-grid tr>:first-child,.attendance-grid.month-grid tr>:first-child{width:clamp(112px,33vw,128px);min-width:clamp(112px,33vw,128px);padding:6px}
+  .attendance-grid thead th{white-space:normal;padding:10px 4px}
+  .attendance-grid .student-name-link{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;min-height:48px;padding:4px 2px;font-size:.875rem;line-height:1.4}
+  .attendance-grid .grid-counts{display:grid;grid-template-columns:minmax(0,1fr) 44px;gap:2px;padding:2px}
+  .attendance-grid .grid-counts>strong{grid-column:1;font-size:.9375rem}
+  .attendance-grid .grid-counts>span{grid-column:1;font-size:.75rem}
+  .attendance-grid .grid-counts>.row-menu{grid-column:2;grid-row:1/3;margin:0}
+  .attendance-grid .grid-mark{min-height:88px;padding:8px 4px;gap:5px}
+  .attendance-grid .grid-mark small{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;font-size:.75rem}
+  .grid-mark .grid-add{display:block;width:18px;height:18px;color:var(--muted)}.grid-empty-label{display:none}
+}
 
 /* One roster, with a compact phone view and an optional full grid. */
 .student-list{list-style:none;margin:0;padding:0}.student-list>li{display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line)}
