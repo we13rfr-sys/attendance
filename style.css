@@ -34,6 +34,7 @@
 .grid-counts strong{color:var(--ink);font-size:1rem}
 .pinned-summary{position:sticky;top:0;z-index:4;background:var(--bg);margin-top:12px;padding:12px 0;box-shadow:0 4px 0 var(--bg)}
 .pinned-summary p{font-variant-numeric:tabular-nums}.pinned-summary h2{font-size:1rem;margin-bottom:4px}
+.pinned-summary .category-statistics{max-height:24dvh;overflow:auto;margin-block:0 8px;padding-right:8px}
 .category-breakdown summary{cursor:pointer;padding:12px 0;min-height:48px;color:var(--primary)}
 .days>h2{margin-top:24px;margin-bottom:8px}
 .week-heading{position:sticky;top:0;z-index:3;flex-wrap:wrap;background:var(--bg);padding-block:12px;border-bottom:1px solid var(--line)}

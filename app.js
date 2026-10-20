@@ -3040,11 +3040,12 @@ function teacherInterface(api) {
     }
     main.append(periods);
     const refs=detail.wholeSheet?month.weeks:[ref],stats=teacherMonthStats(b,refs,row.id),summary=el("section",undefined,"attendance-summary pinned-summary");
-    summary.append(el("h2",detail.wholeSheet?month.title:weekRange(ref)),el("p",`Выполнено ${stats.completed} / ${stats.norm} · осталось ${stats.remaining}`),el("p","Бонусы: "+teacherBalance(b,row.id)));
+    summary.setAttribute("aria-label",detail.wholeSheet?"Статистика за месяц":"Статистика за неделю");
+    summary.append(el("p",`Выполнено ${stats.completed} / ${stats.norm} · осталось ${stats.remaining}`),el("p","Бонусы: "+teacherBalance(b,row.id)));
     main.append(summary);
     if(stats.categories.length) {
       const breakdown=el("details",undefined,"category-breakdown");breakdown.append(el("summary","По категориям"));const list=el("dl",undefined,"category-statistics");
-      for(const category of stats.categories)list.append(el("dt",category.name),el("dd",String(category.amount)));breakdown.append(list);main.append(breakdown);
+      for(const category of stats.categories)list.append(el("dt",category.name),el("dd",String(category.amount)));breakdown.append(list);summary.append(breakdown);
     }
     const days=el("section",undefined,"days");
     for(const selected of refs) {
@@ -3876,10 +3877,9 @@ function render() {
       days.setAttribute("aria-label", `Посещаемость за ${weekRange(ref)}`);
       const heading = el("div", undefined, "week-heading");
       heading.append(
-        el("h2", weekRange(ref)),
         el(
           "span",
-          `${sheet.totals[week]} / ${sheet.norms[week]}`,
+          `Выполнено ${sheet.totals[week]} / ${sheet.norms[week]}`,
           "week-total",
         ),
       );
