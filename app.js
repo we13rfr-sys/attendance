@@ -2454,7 +2454,12 @@ function teacherInterface(api) {
     below = false,
     deficit = false,
     detail = null,
-    positionOwner = null, tablePosition = {top:0,left:0};
+    positionOwner = null, tablePosition = {top:0,left:0}, tableOverride = null, openActions = null;
+  const desktop = matchMedia("(min-width: 900px)");
+  const closeActions = () => {if(openActions?.matches(":popover-open"))openActions.hidePopover();openActions=null;};
+  desktop.addEventListener("change",()=>{closeActions();if(tableOverride===null && bookId)render();});
+  window.addEventListener("resize",closeActions);
+  document.addEventListener("scroll",event=>{if(openActions && !openActions.contains(event.target))closeActions();},true);
   const service = () => api.service(),
     book = () => (bookId ? service().books.find((b) => b.id === bookId) : null);
   const savePosition = () => {
@@ -2615,16 +2620,29 @@ function teacherInterface(api) {
     );
   }
   function studentMenu(row, sheet) {
-    const menu = el("details", undefined, "row-menu"),
-      summary = el("summary");
-    summary.append(icon("more"));
+    const menu = el("div", undefined, "row-menu"),
+      summary = button("",()=>{},"student-menu-trigger","more");
     summary.setAttribute("aria-label", "Действия: " + row.name);
-    const actions = el("div", undefined, "menu-panel");
+    summary.setAttribute("aria-expanded","false");
+    const actions = el("div", undefined, "student-actions");
+    actions.setAttribute("popover","auto");
+    const isOpen=()=>typeof actions.showPopover==="function" && actions.matches(":popover-open");
+    const dismiss=()=>{if(isOpen())actions.hidePopover();else document.querySelector("#editor").close();};
+    summary.onclick=()=>{
+      if(isOpen()){actions.hidePopover();return;}
+      if(!actions.showPopover){actions.removeAttribute("popover");modal(row.name,actions,[]);return;}
+      actions.showPopover();openActions=actions;
+      const anchor=summary.getBoundingClientRect(),box=actions.getBoundingClientRect(),gap=12;
+      actions.style.left=Math.max(gap,Math.min(anchor.right-box.width,innerWidth-box.width-gap))+"px";
+      actions.style.top=(desktop.matches?Math.max(gap,Math.min(anchor.bottom+6,innerHeight-box.height-gap)):Math.max(gap,innerHeight-box.height-gap))+"px";
+    };
+    actions.addEventListener("toggle",()=>{summary.setAttribute("aria-expanded",String(isOpen()));});
+    actions.append(el("p",row.name,"menu-student-name"));
     actions.append(
       button(
         "Изменить ФИО",
         () => {
-          menu.open = false;
+          dismiss();
           renameStudent(row);
         },
         "text-button",
@@ -2632,7 +2650,7 @@ function teacherInterface(api) {
       button(
         "Начислить бонусы",
         () => {
-          menu.open = false;
+          dismiss();
           award(row);
         },
         "text-button",
@@ -2640,7 +2658,7 @@ function teacherInterface(api) {
       button(
         "Убрать из периода",
         () => {
-          menu.open = false;
+          dismiss();
           confirmStudent("Убрать из периода "+dateLabel(sheet.start)+"–"+dateLabel(addDays(sheet.start,sheet.weeks*7-2))+"?", row.name, () =>
             change((b) => {
               b.sheets.find((s) => s.id === sheet.id).students = b.sheets
@@ -2654,7 +2672,7 @@ function teacherInterface(api) {
     );
     if (service().registry(bookId).teachers.some((p) => p.studentId === row.id))
       actions.insertBefore(button("Отключить", () => {
-        menu.open = false;
+        dismiss();
         confirmStudent("Отключить студента?", row.name, () =>
           run(() => service().disconnect(bookId, row.id)), "Отключить");
       }, "text-button danger"), actions.lastElementChild);
@@ -2831,7 +2849,7 @@ function teacherInterface(api) {
       render();
     };
     if(!onlyWeeks) {
-      const label=el("label",undefined,"field");label.append(el("span","Месяц"));
+      const label=el("label",undefined,"field month-picker");label.append(el("span","Месяц"));
       const select=el("select");select.setAttribute("aria-label","Месяц");
       for(const m of months){const option=el("option",m.title);option.value=m.key;select.append(option);}
       select.value=month.key;select.onchange=()=>choose(months.find(m=>m.key===select.value).weeks[0]);label.append(select);panel.append(label);
@@ -2886,7 +2904,8 @@ function teacherInterface(api) {
     }
     main.append(modes);if(!wholeSheet)main.append(controls);
     const header = el("div", undefined, "section-heading");
-    header.append(el("h2","Студенты"));
+    const fullTable=tableOverride??desktop.matches;
+    header.append(el("h2","Студенты"),button(fullTable?"Компактный список":"Полная таблица",()=>{tableOverride=!fullTable;render();},"text-button"));
     main.append(header);
     const search = field("Поиск студентов", {
         type: "search",
@@ -2926,6 +2945,17 @@ function teacherInterface(api) {
         .map(row => ({...row, stats:wholeSheet?teacherMonthStats(source,month.weeks,row.id):teacherPeriodStats(source,currentSheet,row.id,week)}))
         .filter(row => !below || row.stats.remaining>0);
       if(deficit) visible.sort((a,b) => b.stats.remaining-a.stats.remaining);
+      const openStudent=row=>{detail={studentId:row.id,sheetId:sheet.id,week,wholeSheet,scroll:scrollY};render();scrollTo(0,0);};
+      const linked=row=>service().registry(b.id).teachers.some(p=>p.studentId===row.id);
+      if(!fullTable) {
+        const list=el("ul",undefined,"student-list");rows.append(list);
+        for(const row of visible) {
+          const item=el("li"),open=button("",()=>openStudent(row),"student-list-open"),name=el("span",row.name,"student-list-name"),counts=el("span",undefined,"student-list-counts");
+          if(linked(row)){const badge=el("span",undefined,"connection-badge");badge.setAttribute("aria-label","Подключён к группе");badge.append(icon("linked"));name.append(badge);}
+          counts.append(el("strong",row.stats.completed+" / "+row.stats.norm),el("span","Бонусы: "+row.balance));
+          open.append(name,counts);item.append(open,studentMenu(row,sheet));list.append(item);
+        }
+      } else {
       const viewport=el("div",undefined,"attendance-scroll"), table=el("table",undefined,"attendance-grid");
       viewport.tabIndex=0;viewport.setAttribute("aria-label",wholeSheet?"Посещаемость за месяц":"Посещаемость за неделю");
       const head=el("thead"), headRow=el("tr"), nameHeading=el("th","Студент");nameHeading.scope="col";headRow.append(nameHeading);
@@ -2935,9 +2965,9 @@ function teacherInterface(api) {
       requestAnimationFrame(()=>{viewport.scrollTop=tablePosition.top;viewport.scrollLeft=tablePosition.left;viewport.onscroll=()=>{tablePosition={top:viewport.scrollTop,left:viewport.scrollLeft};};});
       for(const row of visible) {
         const tr=el("tr"), nameCell=el("th");nameCell.scope="row";
-        const open=button(row.name,()=>{detail={studentId:row.id,sheetId:sheet.id,week,scroll:scrollY};render();scrollTo(0,0);},"student-name-link");
+        const open=button(row.name,()=>openStudent(row),"student-name-link");
         const nameWrap=el("div",undefined,"grid-name");nameWrap.append(open);
-        if(service().registry(b.id).teachers.some(p=>p.studentId===row.id)) {
+        if(linked(row)) {
           const badge=el("span",undefined,"connection-badge");badge.title="Подключён к группе";badge.setAttribute("aria-label","Подключён к группе");badge.append(icon("linked"));nameWrap.append(badge);
         }
         nameCell.append(nameWrap);
@@ -2958,6 +2988,7 @@ function teacherInterface(api) {
           else cell.append(el("span","Отметить","muted"));td.append(cell);tr.append(td);
         }
         body.append(tr);
+      }
       }
       if (!visible.length)
         rows.append(
@@ -3185,6 +3216,7 @@ function teacherInterface(api) {
   }
   function render() {
     if (!service()?.account) return;
+    closeActions();
     if (positionOwner !== service().owner) {
       positionOwner = service().owner;
       try { bookId = localStorage.getItem("attendance-teacher-book:" + positionOwner); } catch { bookId = null; }
@@ -3304,6 +3336,7 @@ function teacherInterface(api) {
       bookId = null;
       rememberBook();
       positionOwner = null, tablePosition = {top:0,left:0};
+      tableOverride = null;
       detail = null;
     },
     hasChanges() {
