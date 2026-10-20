@@ -1491,11 +1491,18 @@ class Teacher {
     this.exchange = exchange;
     this.disk = exchange.disk;
     this.account = null;
+    this.verified = false;
     this.syncing = false;
     this.device = new TeacherDevice(this.disk, deviceOwner);
     this.catalogAt = 0;
   }
-  get writable() { return this.device.writable; }
+  get writable() { return this.verified && this.device.writable; }
+  async restoreCached() {
+    const cached=this.exchange.state.teacherSession;
+    if(!this.exchange.state.token || !cached || cached.tokenHash!==await hexHash(utf8.encode(this.exchange.state.token)))return;
+    const account=this.exchange.state.teacherGroupAccounts?.[cached.owner];
+    if(account){this.owner=cached.owner;this.account=account;}
+  }
   async syncCatalog() {
     if (Date.now() < this.catalogAt) return;
     const records = await this.device.catalog();
@@ -1570,6 +1577,8 @@ class Teacher {
       closures: [],
       conflicts: {},
     };
+    this.exchange.state.teacherSession={owner,tokenHash:await hexHash(utf8.encode(this.exchange.state.token))};
+    this.verified = true;
     await this.save();
   }
   get books() {
@@ -2415,6 +2424,7 @@ class Teacher {
     await this.pushRegistry(id);
   }
   async sync() {
+    if(!this.verified)await this.open();
     if (this.syncing || !this.account) return;
     if (this.retryAt > Date.now())
       throw Object.assign(
@@ -2551,7 +2561,10 @@ function teacherInterface(api) {
       scrollTo(0, 0);
     }
   };
-  const run = (fn, label) => api.operate(fn, label);
+  const run = (fn, label) => {
+    if(!service().writable){showError("Сейчас доступен только просмотр. Дождитесь проверки устройства");return;}
+    return api.operate(fn, label);
+  };
   async function change(action) {
     const y = scrollY;
     await run(async () => {
@@ -3380,8 +3393,9 @@ function teacherInterface(api) {
     api.root.replaceChildren(header, main, footer);
     savePosition();
     writeNavigation();
-    if (!service().writable && service().device.checked) {
-      const status = el("p", service().device.kindOfOwner === "android" ? "Редактирование в приложении. Здесь доступен просмотр." : "Редактирование на другом устройстве. Здесь доступен просмотр.", "delivery");
+    if (!service().writable) {
+      for(const control of main.querySelectorAll('.student-menu-trigger,.day-row,.attendance-grid:not(.month-grid) .grid-mark,.week-actions button,.table-status>button,.settings-grid button,.delete-table,.conflict-panel button,.invitation-block>.primary,.teacher-home>.primary'))control.disabled=true;
+      const status = el("p", !service().device.checked ? "Проверяем устройство. Сохранённый журнал доступен для просмотра." : service().device.kindOfOwner === "android" ? "Редактирование в приложении. Здесь доступен просмотр." : "Редактирование на другом устройстве. Здесь доступен просмотр.", "delivery");
       status.setAttribute("role", "status"); main.prepend(status);
     }
   }
@@ -4062,12 +4076,17 @@ async function poll() {
   polling = (async () => {
     try {
       if (exchange.state.role === "teacher") {
-        if (!teacher?.account) {
+        const wasVerified=!!teacher?.verified;
+        if (!teacher) {
           teacher = new Teacher(exchange, teacherDeviceOwner);
+        }
+        if (!teacher.verified) {
           await teacher.open();
         }
         const before = JSON.stringify(teacher.account);
         const couldWrite = teacher.writable;
+        await teacher.device.refresh();
+        if((!wasVerified || couldWrite!==teacher.writable) && !dialog.open && !["INPUT","SELECT"].includes(document.activeElement?.tagName))render();
         await teacher.sync();
         await updateDirty();
         if (
@@ -4140,18 +4159,19 @@ async function boot() {
       exchange.state.role = "student";
       await exchange.save();
     }
-    render();
-    if (exchange.state.token)
-      await operate(async () => {
-        if (exchange.state.role === "teacher") {
-          teacher = new Teacher(exchange, teacherDeviceOwner);
-          await teacher.open();
-          await teacher.sync();
-        } else {
+    if(exchange.state.token && exchange.state.role==="teacher") {
+      teacher=new Teacher(exchange,teacherDeviceOwner);
+      await teacher.restoreCached();
+      render();
+      schedule(0);
+    } else {
+      render();
+      if (exchange.state.token)
+        await operate(async () => {
           await exchange.restore();
           await exchange.sync();
-        }
-      });
+        });
+    }
     if ("serviceWorker" in navigator)
       navigator.serviceWorker.register("./sw.js").catch(() => {});
   } catch (e) {
