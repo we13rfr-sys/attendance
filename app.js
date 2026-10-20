@@ -2178,7 +2178,7 @@ class Teacher {
           b.remoteHash,
         "Таблица изменилась на Диске. Повторим синхронизацию",
       );
-      const destination = journalDataPath(id);
+      const destination = b.diskPath;
       await this.disk.upload(destination, output, true);
       await this.disk.verifyUpload(destination, output);
       await this.device.publishBook({...b, diskPath:destination});
