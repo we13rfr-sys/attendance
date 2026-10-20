@@ -2979,13 +2979,14 @@ function teacherInterface(api) {
       requestAnimationFrame(()=>{viewport.scrollTop=tablePosition.top;viewport.scrollLeft=tablePosition.left;viewport.onscroll=()=>{tablePosition={top:viewport.scrollTop,left:viewport.scrollLeft};};});
       for(const row of visible) {
         const tr=el("tr"), nameCell=el("th");nameCell.scope="row";
-        const open=button(row.name,()=>openStudent(row),"student-name-link");
-        const nameWrap=el("div",undefined,"grid-name");nameWrap.append(open);
+        const open=button("",()=>openStudent(row),"student-name-link");
+        open.append(el("span",row.name,"grid-student-name"));
+        const nameWrap=el("div",undefined,"grid-name");nameWrap.append(open,studentMenu(row));
+        const counts=el("span",undefined,"grid-counts");counts.append(el("strong",row.stats.completed+" / "+row.stats.norm),el("span","Бонусы: "+row.balance));
         if(linked(row)) {
-          const badge=el("span",undefined,"connection-badge");badge.title="Подключён к группе";badge.setAttribute("aria-label","Подключён к группе");badge.append(icon("linked"));nameWrap.append(badge);
+          const badge=el("span",undefined,"connection-badge");badge.title="Подключён к группе";badge.setAttribute("aria-label","Подключён к группе");badge.append(icon("linked"));counts.insertBefore(badge,counts.lastChild);
         }
-        nameCell.append(nameWrap);
-        const counts=el("div",undefined,"grid-counts");counts.append(el("strong",row.stats.completed+" / "+row.stats.norm),el("span","Бонусы: "+row.balance),studentMenu(row));nameCell.append(counts);tr.append(nameCell);
+        open.append(counts);nameCell.append(nameWrap);tr.append(nameCell);
         if(wholeSheet) {
           const view=teacherView(source,row.id);
           for(const ref of month.weeks) {

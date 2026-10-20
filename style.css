@@ -29,8 +29,9 @@
 .attendance-grid tr>:first-child{width:220px;min-width:220px;padding:8px}
 .grid-mark{min-height:64px;padding:8px 6px;border-radius:0;overflow-wrap:anywhere;white-space:normal}
 .grid-mark small{font-size:.8125rem;max-width:none;line-height:1.4}
-.student-name-link{border-radius:0;overflow-wrap:anywhere;line-height:1.4}
-.grid-counts{display:flex;flex-wrap:wrap;gap:4px 12px;padding:4px;font-weight:400;font-size:.8125rem;color:var(--muted)}
+.student-name-link{border-radius:0;overflow-wrap:anywhere;line-height:1.4;flex-direction:column;align-items:stretch;gap:4px}
+.grid-student-name{padding-right:44px}
+.grid-counts{display:flex;flex-wrap:wrap;gap:2px 12px;font-weight:400;font-size:.8125rem;color:var(--muted)}
 .grid-counts strong{color:var(--ink);font-size:1rem}
 .pinned-summary{position:sticky;top:0;z-index:4;background:var(--bg);margin-top:12px;padding:12px 0;box-shadow:0 4px 0 var(--bg)}
 .pinned-summary p{font-variant-numeric:tabular-nums}.pinned-summary h2{font-size:1rem;margin-bottom:4px}
@@ -41,25 +42,25 @@
 .week-heading .student-balance{margin:0;width:100%;font-size:.9rem}
 @media(max-width:600px){.attendance-grid tr>:first-child{width:176px;min-width:176px}.student-name-link{font-size:.875rem}.grid-name{align-items:flex-start}.grid-counts{gap:2px 8px}.teacher-main{padding-inline:12px}}
 
-.grid-counts{align-items:center}.grid-counts .row-menu{margin-left:auto}
+.grid-counts{align-items:center}.grid-name{position:relative;align-items:flex-start}.grid-name .row-menu{position:absolute;right:0;top:0}
 .grid-add{display:none}.attendance-grid tbody tr:hover>*{background:var(--surface)}
 @media(max-width:599px){
   .attendance-grid th,.attendance-grid td{width:88px;min-width:88px}
   .attendance-grid.month-grid th,.attendance-grid.month-grid td{width:104px;min-width:104px}
   .attendance-grid tr>:first-child,.attendance-grid.month-grid tr>:first-child{width:clamp(112px,33vw,128px);min-width:clamp(112px,33vw,128px);padding:6px}
   .attendance-grid thead th{white-space:normal;padding:10px 4px}
-  .attendance-grid .student-name-link{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;min-height:48px;padding:4px 2px;font-size:.875rem;line-height:1.4}
-  .attendance-grid .grid-counts{display:grid;grid-template-columns:minmax(0,1fr) 44px;gap:2px;padding:2px}
-  .attendance-grid .grid-counts>strong{grid-column:1;font-size:.9375rem}
-  .attendance-grid .grid-counts>span{grid-column:1;font-size:.75rem}
-  .attendance-grid .grid-counts>.row-menu{grid-column:2;grid-row:1/3;margin:0}
+  .attendance-grid .student-name-link{padding:4px 2px;font-size:.875rem;line-height:1.4}
+  .attendance-grid .grid-student-name{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+  .attendance-grid .grid-counts{gap:2px 8px}
+  .attendance-grid .grid-counts>strong{font-size:.9375rem}
+  .attendance-grid .grid-counts>span:not(.connection-badge){font-size:.75rem;flex-basis:100%}
   .attendance-grid .grid-mark{min-height:88px;padding:8px 4px;gap:5px}
   .attendance-grid .grid-mark small{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;font-size:.75rem}
   .grid-mark .grid-add{display:block;width:18px;height:18px;color:var(--muted)}.grid-empty-label{display:none}
 }
 
 /* One roster, with a compact phone view and an optional full grid. */
-.student-list{list-style:none;margin:0;padding:0}.student-list>li{display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line)}
+.student-list{list-style:none;margin:0;padding:0}.student-list>li{display:flex;align-items:flex-start;gap:8px;border-bottom:1px solid var(--line)}.student-list>li>.row-menu{margin-top:4px}
 .student-list-open{flex:1;min-width:0;display:flex;flex-direction:column;align-items:stretch;gap:6px;border:0;border-radius:0;padding:14px 4px;text-align:left;color:var(--ink)}
 .student-list-name{font-size:1rem;font-weight:500;line-height:1.4;overflow-wrap:anywhere}.student-list-name .connection-badge{display:inline-flex;margin-left:8px;vertical-align:middle}
 .student-list-counts{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:baseline;font-size:.875rem;font-weight:400;color:var(--muted);font-variant-numeric:tabular-nums}.student-list-counts strong{color:var(--ink);font-size:1rem}
