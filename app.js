@@ -2481,7 +2481,7 @@ function teacherInterface(api) {
       if (bookId)
         localStorage.setItem(
           "attendance-teacher-page:" + bookId,
-          JSON.stringify({ sheetId, week, tab }),
+          JSON.stringify({ sheetId, week, tab, wholeSheet, detail, tableOverride }),
         );
     } catch {
       showError("Не удалось запомнить месяц и неделю");
@@ -2493,6 +2493,9 @@ function teacherInterface(api) {
     sheetId = saved?.sheetId;
     week = Number.isInteger(saved?.week) ? saved.week : 0;
     tab = saved?.tab === "settings" ? "settings" : "journal";
+    wholeSheet = saved?.wholeSheet === true;
+    detail = saved?.detail?.studentId ? saved.detail : null;
+    tableOverride = typeof saved?.tableOverride === "boolean" ? saved.tableOverride : null;
   };
   const rememberBook = () => {
     try {
@@ -2501,17 +2504,41 @@ function teacherInterface(api) {
       else localStorage.removeItem(key);
     } catch { showError("Не удалось запомнить открытую группу"); }
   };
+  const navigationState = () => ({owner:positionOwner,bookId,sheetId,week,tab,wholeSheet,detail,tableOverride,scroll:scrollY});
+  const writeNavigation = (push=false) => {
+    const previous=history.state?.attendanceTeacher;
+    const depth=previous?.owner===positionOwner ? previous.depth : 0;
+    history[push?"pushState":"replaceState"]({...history.state,attendanceTeacher:{...navigationState(),depth:depth+(push?1:0)}},"");
+  };
+  const restoreNavigation = saved => {
+    ({bookId,sheetId,week,tab,wholeSheet,detail,tableOverride}=saved);
+  };
+  window.addEventListener("popstate",event=>{
+    const saved=event.state?.attendanceTeacher;
+    if(!service()?.account || saved?.owner!==positionOwner)return;
+    restoreNavigation(saved);
+    rememberBook();
+    render();
+    requestAnimationFrame(()=>scrollTo(0,saved.scroll??0));
+  });
   const goBook = (id) => {
+    writeNavigation();
     bookId = id;
     detail = null;
     tab = "journal";
     query = "";
     rememberBook();
     readPosition();
+    detail = null;
+    writeNavigation(true);
     render();
     scrollTo(0, 0);
   };
   const back = () => {
+    if(history.state?.attendanceTeacher?.owner===positionOwner && history.state.attendanceTeacher.depth>0) {
+      history.back();
+      return;
+    }
     if (detail) {
       const y = detail.scroll;
       detail = null;
@@ -2959,7 +2986,7 @@ function teacherInterface(api) {
         .map(row => ({...row, stats:wholeSheet?teacherMonthStats(source,month.weeks,row.id):teacherPeriodStats(source,currentSheet,row.id,week)}))
         .filter(row => !below || row.stats.remaining>0);
       if(deficit) visible.sort((a,b) => b.stats.remaining-a.stats.remaining);
-      const openStudent=row=>{detail={studentId:row.id,sheetId:sheet.id,week,wholeSheet,scroll:scrollY};render();scrollTo(0,0);};
+      const openStudent=row=>{writeNavigation();detail={studentId:row.id,sheetId:sheet.id,week,wholeSheet,scroll:scrollY};writeNavigation(true);render();scrollTo(0,0);};
       const linked=row=>service().registry(b.id).teachers.some(p=>p.studentId===row.id);
       if(!fullTable) {
         const list=el("ul",undefined,"student-list");rows.append(list);
@@ -3237,7 +3264,17 @@ function teacherInterface(api) {
       positionOwner = service().owner;
       try { bookId = localStorage.getItem("attendance-teacher-book:" + positionOwner); } catch { bookId = null; }
       readPosition();
+      const saved=history.state?.attendanceTeacher;
+      if(saved?.owner===positionOwner)restoreNavigation(saved);
+      else {
+        // Reopened journals need parent entries so phone Back stays inside the app.
+        const current=navigationState();
+        bookId=null;detail=null;writeNavigation();
+        if(current.bookId){restoreNavigation({...current,detail:null});writeNavigation(true);}
+        if(current.bookId && current.detail){restoreNavigation(current);writeNavigation(true);}
+      }
     }
+    if(detail && !book()?.students.some(s=>s.id===detail.studentId))detail=null;
     const b = book(),
       header = el("header", undefined, "topbar"),
       brand = el("div", undefined, "brand");
@@ -3341,6 +3378,8 @@ function teacherInterface(api) {
       }
     }
     api.root.replaceChildren(header, main, footer);
+    savePosition();
+    writeNavigation();
     if (!service().writable && service().device.checked) {
       const status = el("p", service().device.kindOfOwner === "android" ? "Редактирование в приложении. Здесь доступен просмотр." : "Редактирование на другом устройстве. Здесь доступен просмотр.", "delivery");
       status.setAttribute("role", "status"); main.prepend(status);
@@ -3354,6 +3393,7 @@ function teacherInterface(api) {
       positionOwner = null, tablePosition = {top:0,left:0};
       tableOverride = null;
       detail = null;
+      if(history.state?.attendanceTeacher)history.replaceState({...history.state,attendanceTeacher:null},"");
     },
     hasChanges() {
       return service()?.books.some((b) => b.dirty && b.diskPath);
