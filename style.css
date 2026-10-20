@@ -23,4 +23,24 @@
 .category-statistics{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 24px;max-width:520px}.category-statistics dd{margin:0;font-variant-numeric:tabular-nums}.attendance-summary{padding-block:12px;margin-block:12px;border-block:1px solid var(--line)}
 @media(max-width:600px){.attendance-grid tr>:first-child{min-width:164px;width:164px}.attendance-grid th,.attendance-grid td{padding:4px}.grid-name{gap:0}.attendance-grid .row-menu summary{min-width:32px;padding:4px}.student-name-link{font-size:.8rem}.attendance-grid .connection-badge{width:14px}.attendance-grid .connection-badge .icon{width:14px}}
 
-.journal-legend{margin-top:24px}.journal-legend h3{font-size:1rem;margin-bottom:12px}.journal-legend ul{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:12px 24px}.journal-legend li{display:flex;align-items:center;gap:8px;font-size:.875rem;color:var(--muted)}
+
+.attendance-scroll{max-height:65dvh;min-height:240px;overscroll-behavior:contain;border-radius:8px}
+.attendance-grid{table-layout:fixed;width:max-content;min-width:100%}
+.attendance-grid th,.attendance-grid td{width:124px;min-width:124px;padding:0;vertical-align:middle}
+.attendance-grid thead th{position:sticky;top:0;z-index:2;padding:10px 6px}
+.attendance-grid thead th:first-child{z-index:3}
+.attendance-grid tr>:first-child{width:220px;min-width:220px;padding:8px}
+.grid-mark{min-height:96px;padding:10px 6px;border-radius:0;overflow-wrap:anywhere;white-space:normal}
+.grid-mark small{font-size:.8125rem;max-width:none;line-height:1.4}
+.student-name-link{border-radius:0;overflow-wrap:anywhere;line-height:1.4}
+.grid-counts{display:flex;flex-wrap:wrap;gap:4px 12px;padding:4px;font-weight:400;font-size:.8125rem;color:var(--muted)}
+.grid-counts strong{color:var(--ink);font-size:1rem}
+.pinned-summary{position:sticky;top:0;z-index:4;background:var(--bg);margin-top:12px;padding:12px 0;box-shadow:0 4px 0 var(--bg)}
+.pinned-summary p{font-variant-numeric:tabular-nums}.pinned-summary h2{font-size:1rem;margin-bottom:4px}
+.category-breakdown summary{cursor:pointer;padding:12px 0;min-height:48px;color:var(--primary)}
+.days>h2{margin-top:24px;margin-bottom:8px}
+.week-heading{position:sticky;top:0;z-index:3;flex-wrap:wrap;background:var(--bg);padding-block:12px;border-bottom:1px solid var(--line)}
+.week-heading .student-balance{margin:0;width:100%;font-size:.9rem}
+@media(max-width:600px){.attendance-grid tr>:first-child{width:176px;min-width:176px}.attendance-grid .row-menu summary{min-width:44px}.student-name-link{font-size:.875rem}.grid-name{align-items:flex-start}.grid-counts{gap:2px 8px}.teacher-main{padding-inline:12px}}
+
+.grid-counts{align-items:center}.grid-counts .row-menu{margin-left:auto}.grid-counts .row-menu summary{min-height:44px}

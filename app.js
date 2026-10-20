@@ -68,7 +68,7 @@ function addDays(start, days) {
   ensure(/^\d{4}-\d{2}-\d{2}$/.test(start)); const d = new Date(start + 'T12:00:00Z'); ensure(Number.isFinite(d.getTime()) && d.toISOString().slice(0, 10) === start);
   d.setUTCDate(d.getUTCDate() + days); return d.toISOString().slice(0, 10);
 }
-function weekDates(sheet, week) { return Array.from({ length: 6 }, (_, day) => addDays(sheet.start, week * 7 + day)); }
+function weekDates(sheet, week) { return sheet.removedWeeks?.includes(week) ? [] : Array.from({ length: 6 }, (_, day) => addDays(sheet.start, week * 7 + day)); }
 function validateView(v, profile) {
   ensure(v && v.bookId === profile.bookId && v.studentId === profile.studentId && typeof v.name === 'string' && v.name.trim() && v.name.length <= 200 && typeof v.bookName === 'string' && v.bookName.length <= 500 && v.protocol >= 2 && Number.isSafeInteger(v.balance));
   ensure(Array.isArray(v.categories) && v.categories.length <= 100 && new Set(v.categories.map(c => c.id)).size === v.categories.length);
@@ -78,6 +78,7 @@ function validateView(v, profile) {
     ensure(typeof s.id === 'string' && typeof s.name === 'string' && Number.isInteger(s.weeks) && s.weeks >= 1 && s.weeks <= 52 && s.norms?.length === s.weeks && s.norms.every(n => Number.isInteger(n) && n >= 0 && n <= 1_000_000));
     addDays(s.start, 0); ensure(new Date(s.start + 'T12:00:00Z').getUTCDay() === 1 && s.marks && typeof s.marks === 'object');
     ensure(!s.closedWeeks || (Array.isArray(s.closedWeeks) && s.closedWeeks.every(w => Number.isInteger(w) && w >= 0 && w < s.weeks)));
+    ensure(!s.removedWeeks || (Array.isArray(s.removedWeeks) && s.removedWeeks.every(w => Number.isInteger(w) && w >= 0 && w < s.weeks && s.norms[w]===0)));
     const dates = new Set(Array.from({ length: s.weeks }, (_, w) => weekDates(s, w)).flat());
     for (const [date, m] of Object.entries(s.marks)) ensure(dates.has(date) && Number.isInteger(m.amount) && m.amount >= 1 && m.amount <= 1_000_000 && v.categories.some(c => c.id === m.categoryId));
   }
@@ -214,10 +215,11 @@ class Vault {
 
 // disk
 class DiskError extends Error {
-  constructor(status, message, retry = 0) {
+  constructor(status, message, retry = 0, storageUnavailable = false) {
     super(message);
     this.status = status;
     this.retry = retry;
+    this.storageUnavailable = storageUnavailable;
   }
 }
 function diskRetryDelay(value, now = Date.now()) {
@@ -250,6 +252,14 @@ class Disk {
     }
     if (!response.ok) {
       const retry = diskRetryDelay(response.headers.get("Retry-After"));
+      let storageUnavailable=false;
+      if(response.status>=500 && response.status<=504 && response.body) {
+        const reader=response.body.getReader(),chunks=[];let size=0;
+        try {for(;;){const part=await reader.read();if(part.done)break;size+=part.value.length;if(size>200)break;chunks.push(part.value);}}
+        finally {await reader.cancel();}
+        if(size<=200){const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
+          storageUnavailable=["file IO failure: no more reliable hosts","file IO failure: no successful lookup result"].includes(text(bytes).trim());}
+      }
       throw new DiskError(
         response.status,
         {
@@ -265,6 +275,7 @@ class Disk {
         [423, 429].includes(response.status)
           ? retry
           : 0,
+        storageUnavailable,
       );
     }
     if (!response.body) return new Uint8Array();
@@ -1080,6 +1091,7 @@ function teacherValidate(book) {
         Math.abs(o.amount) <= 1_000_000,
     );
   for (const s of book.sheets) {
+    ensure(!s.removedWeeks || (Array.isArray(s.removedWeeks) && s.removedWeeks.every(w=>Number.isInteger(w) && w>=0 && w<s.weeks && s.norms[w]===0)));
     ensure(
       Number.isInteger(s.weeks) &&
         s.weeks >= 1 &&
@@ -1124,6 +1136,49 @@ function teacherValidate(book) {
 }
 
 
+// calendar
+
+function monthTitle(key) {
+  const value=new Date(key+'-01T12:00:00Z').toLocaleDateString('ru',{month:'long',year:'numeric',timeZone:'UTC'}).replace(/ г\.$/,'');
+  return value[0].toLocaleUpperCase('ru')+value.slice(1);
+}
+function calendarMonths(sheets) {
+  const weeks=sheets.flatMap(sheet=>Array.from({length:sheet.weeks},(_,index)=>({sheetId:sheet.id,index,start:addDays(sheet.start,index*7)})).filter(ref=>!sheet.removedWeeks?.includes(ref.index))).sort((a,b)=>a.start.localeCompare(b.start));
+  const grouped=new Map();
+  for(const week of weeks) {const key=week.start.slice(0,7);if(!grouped.has(key))grouped.set(key,{key,title:monthTitle(key),weeks:[]});grouped.get(key).weeks.push(week);}
+  return [...grouped.values()];
+}
+function currentMonth(months,sheetId,week) {return months.find(m=>m.weeks.some(ref=>ref.sheetId===sheetId&&ref.index===week))??months[0];}
+function weekRange(ref) {const short=date=>date.slice(8,10)+'.'+date.slice(5,7);return short(ref.start)+'–'+short(addDays(ref.start,5));}
+function monthSheet(key,students=[]) {
+  ensure(/^\d{4}-\d{2}$/.test(key)&&new Date(key+'-01T12:00:00Z').toISOString().slice(0,7)===key,'Выберите месяц');
+  const first=key+'-01',start=addDays(first,(8-new Date(first+'T12:00:00Z').getUTCDay())%7);
+  let weeks=0;while(addDays(start,weeks*7).slice(0,7)===key)weeks++;
+  return {id:uid(),name:monthTitle(key),start,weeks,dateView:'NUMBER',students:[...students],norms:Array(weeks).fill(3),marks:{},closedWeeks:[],sourceRows:{},sourceColumns:[],sourceNormRow:0,sourceIdColumn:0};
+}
+function addCalendarMonth(book,key) {
+  ensure(!calendarMonths(book.sheets).some(m=>m.key===key),'Этот месяц уже есть в журнале');
+  const sheet=monthSheet(key,book.students.map(s=>s.id));let suffix=2;
+  while(book.sheets.some(s=>s.name.toLocaleLowerCase('ru')===sheet.name.toLocaleLowerCase('ru')))sheet.name=monthTitle(key)+' ('+(suffix++)+')';
+  book.sheets.push(sheet);return sheet;
+}
+function teacherMonthStats(book,refs,studentId) {
+  const parts=refs.map(ref=>{const s=book.sheets.find(s=>s.id===ref.sheetId);return s.students.includes(studentId)?teacherPeriodStats(book,s,studentId,ref.index):null;}).filter(Boolean);
+  return {completed:parts.reduce((n,s)=>n+s.completed,0),norm:parts.reduce((n,s)=>n+s.norm,0),remaining:parts.reduce((n,s)=>n+s.remaining,0),categories:book.categories.map(c=>({...c,amount:parts.reduce((n,s)=>n+(s.categories.find(x=>x.id===c.id)?.amount??0),0)})).filter(c=>c.amount>0)};
+}
+function deleteCalendarMonth(book,key) {
+  const months=calendarMonths(book.sheets);ensure(months.length>1,'В группе должен остаться хотя бы один месяц');
+  const month=months.find(m=>m.key===key);ensure(month);
+  for(const ref of month.weeks) {
+    const sheet=book.sheets.find(s=>s.id===ref.sheetId),days=new Set(weekDates(sheet,ref.index));
+    for(const key of Object.keys(sheet.marks))if(days.has(key.split('|')[1]))delete sheet.marks[key];
+    book.bonus=book.bonus.filter(op=>!(op.markKey?.startsWith(sheet.id+'|')&&days.has(op.markKey.split('|').at(-1))));
+    sheet.norms[ref.index]=0;sheet.removedWeeks=[...new Set([...(sheet.removedWeeks??[]),ref.index])];sheet.closedWeeks=[...new Set([...(sheet.closedWeeks??[]),ref.index])];
+  }
+}
+
+
+
 // journal-data
 
 const journalFolder = "disk:/Посещаемость";
@@ -1141,6 +1196,7 @@ function journalPayload(book) {
   for (const sheet of result.sheets) {
     for (const key of Object.keys(sheet)) if (key.startsWith("source")) delete sheet[key];
     sheet.closedWeeks ??= [];
+    sheet.removedWeeks ??= [];
   }
   return result;
 }
@@ -1161,6 +1217,34 @@ function readJournalData(bytes) {
 async function readJournalFile(bytes, path, name, base) {
   ensure(isJournalData(path), "Неподдерживаемый файл группы");
   return readJournalData(bytes);
+}
+
+
+// recovery
+class RecoveryAttempts {
+  reset(){this.path=null;this.count=0;}
+  ready(path,error,now=Date.now()) {
+    if(!error.storageUnavailable){this.reset();return false;}
+    if(this.path!==path){this.path=path;this.first=now;this.count=0;}
+    this.count++;
+    if(this.count<3 || now-this.first<30_000 || now<(this.retryAt??0))return false;
+    this.retryAt=now+1_800_000;return true;
+  }
+}
+async function recoverWebJournal(book,disk,backup,publish) {
+  const original=book.diskPath,metadata=await disk.api('resources',{path:original}),revision=metadata.sha256?.toLowerCase();
+  let base;try{base=book.baseData?unb64(book.baseData):null;}catch{}
+  const output=writeJournalData(book);
+  ensure(revision && ((base && await hexHash(base)===book.remoteHash && revision===book.remoteHash) || revision===await hexHash(output)),
+    'На Диске другая версия. Автовосстановление остановлено, локальные правки сохранены');
+  await backup();
+  const destination=journalDataPath(uid()),data=JSON.parse(text(output));data.storageRevision=uid();
+  const bytes=utf8.encode(JSON.stringify(data)),hash=await hexHash(bytes);
+  await disk.upload(destination,bytes,false);
+  ensure(await hexHash(await disk.download(destination,20_000_000))===hash,'Новый файл не прошёл проверку. Группа остаётся подключена к исходному файлу');
+  ensure((await disk.api('resources',{path:original})).sha256?.toLowerCase()===revision,'Исходный файл изменился. Восстановление остановлено');
+  const next={...book,diskPath:destination,remoteHash:hash,baseData:b64(bytes),baseModel:JSON.stringify(journalPayload(book)),dirty:false,syncedRevision:book.localRevision,status:'Синхронизировано с Диском'};
+  await publish(next);return next;
 }
 
 
@@ -1281,7 +1365,7 @@ function teacherMerge(base, local, remote, path = "таблица") {
         .filter((x) => x !== undefined);
     }
     if (
-      /students|closedWeeks|deletedSheetNames$/.test(path) &&
+      /(students|closedWeeks|removedWeeks|deletedSheetNames)$/.test(path) &&
       [...base, ...local, ...remote].every(
         (x) => typeof x === "string" || typeof x === "number",
       )
@@ -2102,6 +2186,29 @@ class Teacher {
     });
     await this.save();
   }
+  async automaticRecovery(id,error) {
+    if(!this.writable)return false;
+    this.recoveryAttempts??=new Map();
+    if(!this.recoveryAttempts.has(id))this.recoveryAttempts.set(id,new RecoveryAttempts());
+    const book=this.get(id);
+    if(!this.recoveryAttempts.get(id).ready(book.diskPath,error))return false;
+    await this.device.requireWriter();
+    const snapshot=structuredClone(book);
+    const checkCatalog=async()=>{const record=(await this.device.catalog()).find(r=>r.id===id);ensure(record&&!record.deleted&&record.path===snapshot.diskPath,'Подключение группы изменилось. Обновите список групп');};
+    await checkCatalog();
+    const next=await recoverWebJournal(snapshot,this.disk,async()=>{
+      this.account.recovery??={};this.account.recovery[id]=snapshot;await this.save();
+    },async recovered=>{
+      await this.device.requireWriter();await checkCatalog();
+      await this.device.publishBook(recovered);
+      const record=(await this.device.catalog()).find(r=>r.id===id);
+      ensure(record&&!record.deleted&&record.path===recovered.diskPath,'Не удалось подтвердить обновление списка групп');
+    });
+    const current=this.get(id);
+    const pending=current.localRevision!==snapshot.localRevision;
+    Object.assign(current,{diskPath:next.diskPath,remoteHash:next.remoteHash,baseData:next.baseData,baseModel:next.baseModel,syncedRevision:next.syncedRevision,dirty:pending,status:pending?'Ожидает синхронизации':next.status});
+    await this.save();return true;
+  }
   async syncBook(id) {
     let b = this.get(id);
     if (!b.diskPath) return;
@@ -2114,6 +2221,7 @@ class Teacher {
         this.catalogAt = 0;
         throw new Error("Таблица недоступна по прежнему пути. Обновим список таблиц автоматически");
       }
+      if(await this.automaticRecovery(id,e))return this.syncBook(id);
       throw e;
     }
     const revision = await hexHash(bytes);
@@ -2179,8 +2287,10 @@ class Teacher {
         "Таблица изменилась на Диске. Повторим синхронизацию",
       );
       const destination = b.diskPath;
-      await this.disk.upload(destination, output, true);
-      await this.disk.verifyUpload(destination, output);
+      try {
+        await this.disk.upload(destination, output, true);
+        await this.disk.verifyUpload(destination, output);
+      } catch(e) {if(await this.automaticRecovery(id,e))return this.syncBook(id);throw e;}
       await this.device.publishBook({...b, diskPath:destination});
       const current = this.get(id);
       Object.assign(current, {
@@ -2200,6 +2310,7 @@ class Teacher {
     await this.publishViews(id);
     await this.cleanup(id);
     await this.pushRegistry(id);
+    this.recoveryAttempts?.get(id)?.reset();
     if (feedError) throw feedError;
   }
   async cleanup(id) {
@@ -2343,7 +2454,7 @@ function teacherInterface(api) {
     below = false,
     deficit = false,
     detail = null,
-    positionOwner = null;
+    positionOwner = null, tablePosition = {top:0,left:0};
   const service = () => api.service(),
     book = () => (bookId ? service().books.find((b) => b.id === bookId) : null);
   const savePosition = () => {
@@ -2354,7 +2465,7 @@ function teacherInterface(api) {
           JSON.stringify({ sheetId, week, tab }),
         );
     } catch {
-      showError("Не удалось запомнить лист и неделю");
+      showError("Не удалось запомнить месяц и неделю");
     }
   };
   const readPosition = () => {
@@ -2432,6 +2543,20 @@ function teacherInterface(api) {
         "primary",
       ),
     ]);
+  }
+  function monthField(label, value) {
+    const f=field(label,{type:"month",value,required:true});
+    if(f.input.type==="month")return {...f,valid:()=>f.input.reportValidity()};
+    const wrap=el("div",undefined,"stack"),monthLabel=el("label",undefined,"field"),month=el("select"),
+      year=field("Год",{type:"number",value:value.slice(0,4),min:"1",max:"9999",step:"1",required:true,inputMode:"numeric"});
+    for(let i=1;i<=12;i++) {
+      const key=String(i).padStart(2,"0"),option=el("option",new Date('2000-'+key+'-01T12:00:00Z').toLocaleDateString('ru',{month:'long',timeZone:'UTC'}));
+      option.value=key;month.append(option);
+    }
+    month.value=value.slice(5,7);monthLabel.append(el("span",label),month);f.input.type="hidden";
+    const update=()=>{f.input.value=year.input.value.padStart(4,"0")+'-'+month.value;};
+    month.onchange=update;year.input.oninput=update;wrap.append(monthLabel,year.wrap,f.input);
+    return {wrap,input:f.input,valid:()=>year.input.reportValidity()};
   }
   function confirm(title, copy, action, label = "Удалить") {
     modal(title, el("p", copy), [
@@ -2513,10 +2638,10 @@ function teacherInterface(api) {
         "text-button",
       ),
       button(
-        "Удалить с листа",
+        "Убрать из периода",
         () => {
           menu.open = false;
-          confirmStudent("Удалить студента с листа?", row.name, () =>
+          confirmStudent("Убрать из периода "+dateLabel(sheet.start)+"–"+dateLabel(addDays(sheet.start,sheet.weeks*7-2))+"?", row.name, () =>
             change((b) => {
               b.sheets.find((s) => s.id === sheet.id).students = b.sheets
                 .find((s) => s.id === sheet.id)
@@ -2612,12 +2737,7 @@ function teacherInterface(api) {
       start = new Date(
         Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()),
       );
-    start.setUTCDate(start.getUTCDate() - ((start.getUTCDay() + 6) % 7));
-    const date = field("Первый понедельник", {
-      type: "date",
-      value: start.toISOString().slice(0, 10),
-      required: true,
-    });
+    const date = monthField("Первый месяц",start.toISOString().slice(0,7));
     form.append(name.wrap, date.wrap);
     form.onsubmit = (e) => e.preventDefault();
     modal("Создать группу", form, [
@@ -2626,9 +2746,10 @@ function teacherInterface(api) {
         () => {
           if (!form.reportValidity()) return;
           try {
-            const next = teacherNewBook(name.input.value, date.input.value);
+            const next = teacherNewBook(name.input.value, monthSheet(date.input.value).start);
             document.querySelector("#editor").close();
             run(async () => {
+              next.sheets=[monthSheet(date.input.value)];
               await service().add(next);
               goBook(next.id);
               await service().createOnDisk(next.id);
@@ -2700,61 +2821,31 @@ function teacherInterface(api) {
     }
     return wrap;
   }
-  function selectors(
-    b,
-    sheet,
-    currentWeek,
-    detailMode = false,
-    onlyWeeks = false,
-  ) {
-    const panel = el("section", undefined, "teacher-controls"),
-      label = el("label", undefined, "field");
-    label.append(el("span", "Лист"));
-    const select = el("select");
-    select.setAttribute("aria-label", "Лист");
-    for (const s of b.sheets) {
-      const o = el("option", s.name);
-      o.value = s.id;
-      select.append(o);
-    }
-    select.value = sheet.id;
-    select.onchange = () => {
-      if (detailMode) {
-        detail.sheetId = select.value;
-        detail.week = 0;
-      } else {
-        sheetId = select.value;
-        week = 0;
-        savePosition();
-      }
+  function selectors(b,sheet,currentWeek,detailMode=false,onlyWeeks=false) {
+    const source=detailMode?b.sheets.filter(s=>s.students.includes(detail.studentId)):b.sheets;
+    const months=calendarMonths(source),month=currentMonth(months,sheet.id,currentWeek);
+    const panel=el("section",undefined,"teacher-controls");
+    const choose=ref=>{
+      if(detailMode){detail.sheetId=ref.sheetId;detail.week=ref.index;}
+      else {sheetId=ref.sheetId;week=ref.index;tablePosition={top:0,left:0};savePosition();}
       render();
     };
-    label.append(select);
-    if (!onlyWeeks) panel.append(label);
-    const weeks = el("div", undefined, "weeks");
-    weeks.setAttribute("aria-label", "Недели");
-    for (let i = 0; i < sheet.weeks; i++) {
-      const option = button(
-        String(i + 1),
-        () => {
-          if (detailMode) detail.week = i;
-          else {
-            wholeSheet = false;
-            week = i;
-            savePosition();
-          }
-          render();
-        },
-        i === currentWeek ? "week selected" : "week",
-      );
-      option.setAttribute("aria-label", "Неделя " + (i + 1));
-      option.setAttribute("aria-pressed", String(i === currentWeek));
-      weeks.append(option);
+    if(!onlyWeeks) {
+      const label=el("label",undefined,"field");label.append(el("span","Месяц"));
+      const select=el("select");select.setAttribute("aria-label","Месяц");
+      for(const m of months){const option=el("option",m.title);option.value=m.key;select.append(option);}
+      select.value=month.key;select.onchange=()=>choose(months.find(m=>m.key===select.value).weeks[0]);label.append(select);panel.append(label);
     }
-    panel.append(weeks);
-    return panel;
+    if(detailMode && detail.wholeSheet)return panel;
+    const label=el("label",undefined,"field week-picker");label.append(el("span","Неделя"));
+    const select=el("select");select.setAttribute("aria-label","Неделя");
+    month.weeks.forEach((ref,index)=>{const option=el("option",weekRange(ref));option.value=String(index);select.append(option);});
+    select.value=String(Math.max(0,month.weeks.findIndex(ref=>ref.sheetId===sheet.id&&ref.index===currentWeek)));
+    select.onchange=()=>{if(!detailMode)wholeSheet=false;choose(month.weeks[Number(select.value)]);};
+    label.append(select);panel.append(label);return panel;
   }
   function renderJournal(main, b, sheet) {
+    const month=currentMonth(calendarMonths(b.sheets),sheet.id,week);
     main.append(inviteBlock(b));
     const controls = selectors(b, sheet, week, false, true),
       actions = el("div", undefined, "week-actions"),
@@ -2789,24 +2880,13 @@ function teacherInterface(api) {
     );
     controls.append(actions);
     const modes = el("div", undefined, "filter-bar");
-    for (const [value, title] of [[false,"Неделя"],[true,"Весь лист"]]) {
+    for (const [value, title] of [[false,"Неделя"],[true,"Месяц"]]) {
       const mode = button(title, () => {wholeSheet=value;render();}, "filter-chip");
       mode.setAttribute("aria-pressed", String(wholeSheet===value)); modes.append(mode);
     }
-    main.append(modes, controls);
+    main.append(modes);if(!wholeSheet)main.append(controls);
     const header = el("div", undefined, "section-heading");
-    header.append(
-      el("h2", "Студенты"),
-      button(
-        "Добавить студента",
-        () =>
-          textEdit("Добавить студента", "ФИО", "", (value) =>
-            change((b) => teacherAddStudent(b, value)),
-          ),
-        "text-button",
-        "add",
-      ),
-    );
+    header.append(el("h2","Студенты"));
     main.append(header);
     const search = field("Поиск студентов", {
         type: "search",
@@ -2838,27 +2918,21 @@ function teacherInterface(api) {
     sortButton.setAttribute("aria-pressed", String(deficit));
     filters.append(belowButton, sortButton);
     main.append(search.wrap, filters, rows);
-    const legend=el("section",undefined,"journal-legend");legend.setAttribute("aria-label","Легенда категорий");legend.append(el("h3","Категории отметок"));
-    const entries=el("ul");
-    for(const category of b.categories.filter(c=>!c.deleted || Object.values(sheet.marks).some(m=>m.categoryId===c.id))) {
-      const item=el("li"),swatch=el("span",undefined,"swatch");swatch.style.backgroundColor="#"+category.color;
-      const effect={CREDIT:"прибавляет пары",DEDUCT:"вычитает пары",BONUS:"списание бонусов студентом"}[category.effect];
-      item.append(swatch,el("span",category.name+(category.deleted?" (архивная)":"")+" · "+effect));entries.append(item);
-    }
-    legend.append(entries);main.append(legend);
     function populate() {
       rows.replaceChildren();
       const source = book(), currentSheet = source.sheets.find((s) => s.id === sheet.id);
-      const visible = teacherRows(source, currentSheet, week, query, false, false)
-        .map(row => ({...row, stats:teacherPeriodStats(source,currentSheet,row.id,wholeSheet?null:week)}))
+      const roster=wholeSheet?{...currentSheet,students:[...new Set(month.weeks.flatMap(ref=>source.sheets.find(s=>s.id===ref.sheetId).students))]}:currentSheet;
+      const visible = teacherRows(source, roster, week, query, false, false)
+        .map(row => ({...row, stats:wholeSheet?teacherMonthStats(source,month.weeks,row.id):teacherPeriodStats(source,currentSheet,row.id,week)}))
         .filter(row => !below || row.stats.remaining>0);
       if(deficit) visible.sort((a,b) => b.stats.remaining-a.stats.remaining);
       const viewport=el("div",undefined,"attendance-scroll"), table=el("table",undefined,"attendance-grid");
-      viewport.tabIndex=0;viewport.setAttribute("aria-label",wholeSheet?"Посещаемость за лист":"Посещаемость за неделю");
+      viewport.tabIndex=0;viewport.setAttribute("aria-label",wholeSheet?"Посещаемость за месяц":"Посещаемость за неделю");
       const head=el("thead"), headRow=el("tr"), nameHeading=el("th","Студент");nameHeading.scope="col";headRow.append(nameHeading);
-      const headings=wholeSheet?Array.from({length:sheet.weeks},(_,i)=>"Неделя "+(i+1)):weekDates(sheet,week).map((date,i)=>["Пн","Вт","Ср","Чт","Пт","Сб"][i]+" "+dateLabel(date,sheet.dateView));
-      for(const title of [...headings,"Выполнено","Бонусы"]) {const th=el("th",title);th.scope="col";headRow.append(th);}
+      const headings=wholeSheet?month.weeks.map(weekRange):weekDates(sheet,week).map((date,i)=>["Пн","Вт","Ср","Чт","Пт","Сб"][i]+" "+dateLabel(date,sheet.dateView));
+      for(const title of headings) {const th=el("th",title);th.scope="col";headRow.append(th);}
       head.append(headRow);const body=el("tbody");table.append(head,body);viewport.append(table);rows.append(viewport);
+      requestAnimationFrame(()=>{viewport.scrollTop=tablePosition.top;viewport.scrollLeft=tablePosition.left;viewport.onscroll=()=>{tablePosition={top:viewport.scrollTop,left:viewport.scrollLeft};};});
       for(const row of visible) {
         const tr=el("tr"), nameCell=el("th");nameCell.scope="row";
         const open=button(row.name,()=>{detail={studentId:row.id,sheetId:sheet.id,week,scroll:scrollY};render();scrollTo(0,0);},"student-name-link");
@@ -2866,10 +2940,16 @@ function teacherInterface(api) {
         if(service().registry(b.id).teachers.some(p=>p.studentId===row.id)) {
           const badge=el("span",undefined,"connection-badge");badge.title="Подключён к группе";badge.setAttribute("aria-label","Подключён к группе");badge.append(icon("linked"));nameWrap.append(badge);
         }
-        nameWrap.append(studentMenu(row,sheet));nameCell.append(nameWrap);tr.append(nameCell);
+        nameCell.append(nameWrap);
+        const counts=el("div",undefined,"grid-counts");counts.append(el("strong",row.stats.completed+" / "+row.stats.norm),el("span","Бонусы: "+row.balance),studentMenu(row,sheet));nameCell.append(counts);tr.append(nameCell);
         if(wholeSheet) {
-          const totals=teacherView(source,row.id).sheets.find(s=>s.id===sheet.id).totals;
-          for(let i=0;i<sheet.weeks;i++) {const td=el("td");const cell=button(totals[i]+" / "+sheet.norms[i],()=>{week=i;wholeSheet=false;render();},"grid-mark");cell.setAttribute("aria-label",row.name+", неделя "+(i+1)+": "+totals[i]+" из "+sheet.norms[i]);td.append(cell);tr.append(td);}
+          const view=teacherView(source,row.id);
+          for(const ref of month.weeks) {
+            const target=view.sheets.find(s=>s.id===ref.sheetId),td=el("td");
+            const label=target?target.totals[ref.index]+" / "+target.norms[ref.index]:"—";
+            const cell=button(label,()=>{sheetId=ref.sheetId;week=ref.index;wholeSheet=false;tablePosition={top:0,left:0};savePosition();render();},"grid-mark");
+            cell.setAttribute("aria-label",row.name+", "+weekRange(ref)+": "+label);td.append(cell);tr.append(td);
+          }
         } else for(const date of weekDates(sheet,week)) {
           const td=el("td"),mark=sheet.marks[row.id+"|"+date],category=source.categories.find(c=>c.id===mark?.categoryId);
           const cell=button("",()=>markEditor(row,sheet,date),"grid-mark");
@@ -2877,7 +2957,7 @@ function teacherInterface(api) {
           if(category) {const swatch=el("span",undefined,"swatch");swatch.style.backgroundColor="#"+category.color;cell.append(swatch,el("strong",String(mark.amount)),el("small",category.name));}
           else cell.append(el("span","Отметить","muted"));td.append(cell);tr.append(td);
         }
-        tr.append(el("td",row.stats.completed+" / "+row.stats.norm,"grid-total"),el("td",String(row.balance),"grid-total"));body.append(tr);
+        body.append(tr);
       }
       if (!visible.length)
         rows.append(
@@ -2887,7 +2967,7 @@ function teacherInterface(api) {
               ? "Студенты не найдены"
               : below
                 ? "Все студенты выполнили норму"
-                : "На листе пока нет студентов",
+                : "В этом месяце пока нет студентов",
             "empty-copy",
           ),
         );
@@ -2899,73 +2979,40 @@ function teacherInterface(api) {
     };
     populate();
   }
-  function renderDetail(main, b) {
-    const row = b.students.find((s) => s.id === detail.studentId);
-    if (!row) {
-      detail = null;
-      render();
-      return;
-    }
-    const sheet =
-      b.sheets.find(
-        (s) => s.id === detail.sheetId && s.students.includes(row.id),
-      ) ?? b.sheets.find((s) => s.students.includes(row.id));
-    const heading = el("div", undefined, "section-heading");
-    heading.append(el("h1", row.name));
-    if (sheet) heading.append(studentMenu(row, sheet));
-    main.append(
-      heading,
-      el("p", "Бонусы: " + teacherBalance(b, row.id), "student-balance"),
-    );
-    if (!sheet) {
-      main.append(el("p", "Студент отсутствует на листах"));
-      return;
-    }
-    detail.sheetId = sheet.id;
-    detail.week = Math.max(0, Math.min(detail.week, sheet.weeks - 1));
-    main.append(selectors(b, sheet, detail.week, true));
+  function renderDetail(main,b) {
+    const row=b.students.find(s=>s.id===detail.studentId);if(!row){detail=null;render();return;}
+    const months=calendarMonths(b.sheets.filter(s=>s.students.includes(row.id)));
+    const month=currentMonth(months,detail.sheetId,detail.week);
+    const ref=month?.weeks.find(r=>r.sheetId===detail.sheetId&&r.index===detail.week)??month?.weeks[0];
+    const heading=el("div",undefined,"section-heading");heading.append(el("h1",row.name));main.append(heading);
+    if(!ref){main.append(el("p","Студент пока не добавлен в журнал"));return;}
+    detail.sheetId=ref.sheetId;detail.week=ref.index;
+    const sheet=b.sheets.find(s=>s.id===ref.sheetId);heading.append(studentMenu(row,sheet));
+    main.append(selectors(b,sheet,ref.index,true));
     const periods=el("div",undefined,"filter-bar");
-    for(const [value,title] of [[false,"Неделя"],[true,"Весь лист"]]) {
+    for(const [value,title] of [[false,"Неделя"],[true,"Месяц"]]) {
       const toggle=button(title,()=>{detail.wholeSheet=value;render();},"filter-chip");toggle.setAttribute("aria-pressed",String(!!detail.wholeSheet===value));periods.append(toggle);
     }
-    const stats=teacherPeriodStats(b,sheet,row.id,detail.wholeSheet?null:detail.week), summary=el("section",undefined,"attendance-summary");
-    summary.append(el("h2",detail.wholeSheet?"За весь лист":"За неделю "+(detail.week+1)),el("p",`Выполнено ${stats.completed} из ${stats.norm} пар · осталось ${stats.remaining}`));
-    const breakdown=el("dl",undefined,"category-statistics");
-    for(const category of stats.categories) {breakdown.append(el("dt",category.name),el("dd",String(category.amount)));}
-    if(!stats.categories.length)summary.append(el("p","Отметок пока нет","muted"));else summary.append(breakdown);
-    main.append(periods,summary);
-    const total = teacherView(b, row.id).sheets.find((s) => s.id === sheet.id)
-        .totals[detail.week],
-      days = el("section", undefined, "days");
-    days.append(
-      el(
-        "h2",
-        `Неделя ${detail.week + 1} · ${total} / ${sheet.norms[detail.week]}`,
-      ),
-    );
-    weekDates(sheet, detail.week).forEach((date, d) => {
-      const mark = sheet.marks[row.id + "|" + date],
-        category = b.categories.find((c) => c.id === mark?.categoryId),
-        item = button("", () => markEditor(row, sheet, date), "day-row");
-      item.append(
-        el(
-          "span",
-          `${["Пн", "Вт", "Ср", "Чт", "Пт", "Сб"][d]} ${dateLabel(date, sheet.dateView)}`,
-          "day-date",
-        ),
-      );
-      const description = el("span", undefined, "day-details");
-      if (category) {
-        const swatch = el("span", undefined, "swatch");
-        swatch.style.backgroundColor = "#" + category.color;
-        description.append(
-          swatch,
-          el("span", `${mark.amount} · ${category.name}`),
-        );
-      } else description.append(el("span", "Нет отметки", "muted"));
-      item.append(description, icon("next"));
-      days.append(item);
-    });
+    main.append(periods);
+    const refs=detail.wholeSheet?month.weeks:[ref],stats=teacherMonthStats(b,refs,row.id),summary=el("section",undefined,"attendance-summary pinned-summary");
+    summary.append(el("h2",detail.wholeSheet?month.title:weekRange(ref)),el("p",`Выполнено ${stats.completed} / ${stats.norm} · осталось ${stats.remaining}`),el("p","Бонусы: "+teacherBalance(b,row.id)));
+    main.append(summary);
+    if(stats.categories.length) {
+      const breakdown=el("details",undefined,"category-breakdown");breakdown.append(el("summary","По категориям"));const list=el("dl",undefined,"category-statistics");
+      for(const category of stats.categories)list.append(el("dt",category.name),el("dd",String(category.amount)));breakdown.append(list);main.append(breakdown);
+    }
+    const days=el("section",undefined,"days");
+    for(const selected of refs) {
+      const target=b.sheets.find(s=>s.id===selected.sheetId);
+      if(detail.wholeSheet)days.append(el("h2",weekRange(selected)));
+      weekDates(target,selected.index).forEach((date,index)=>{
+        const mark=target.marks[row.id+"|"+date],category=b.categories.find(c=>c.id===mark?.categoryId),item=button("",()=>markEditor(row,target,date),"day-row");
+        item.append(el("span",["Пн","Вт","Ср","Чт","Пт","Сб"][index]+" "+dateLabel(date,target.dateView),"day-date"));
+        const description=el("span",undefined,"day-details");
+        if(category){const swatch=el("span",undefined,"swatch");swatch.style.backgroundColor="#"+category.color;description.append(swatch,el("span",mark.amount+" · "+category.name));}
+        else description.append(el("span","Нет отметки","muted"));item.append(description,icon("next"));days.append(item);
+      });
+    }
     main.append(days);
   }
   function categoryEditor(category) {
@@ -3038,57 +3085,14 @@ function teacherInterface(api) {
     );
     modal(category ? "Категория" : "Добавить категорию", content, actions);
   }
-  function addSheet() {
-    const b = book(),
-      last = b.sheets.at(-1),
-      content = el("form", undefined, "stack"),
-      name = field("Название листа", {
-        value: `${b.sheets.length * 4 + 1}–${b.sheets.length * 4 + 4} недели`,
-        required: true,
-        maxLength: 31,
-      }),
-      start = field("Первый понедельник", {
-        type: "date",
-        value: addDays(last.start, last.weeks * 7),
-        required: true,
-      });
-    content.append(name.wrap, start.wrap);
-    content.onsubmit = (e) => e.preventDefault();
-    modal("Добавить лист", content, [
-      button(
-        "Добавить",
-        () => {
-          if (!content.reportValidity()) return;
-          document.querySelector("#editor").close();
-          change((b) => {
-            ensure(
-              new Date(start.input.value + "T12:00:00Z").getUTCDay() === 1,
-              "Выберите понедельник",
-            );
-            const s = {
-              id: uid(),
-              name: teacherSheetName(b, name.input.value),
-              start: start.input.value,
-              weeks: 4,
-              dateView: last.dateView,
-              students: b.students.map((s) => s.id),
-              norms: [3, 3, 3, 3],
-              marks: {},
-              closedWeeks: [],
-              sourceRows: {},
-              sourceColumns: [],
-              sourceNormRow: 0,
-              sourceIdColumn: 0,
-            };
-            b.sheets.push(s);
-            sheetId = s.id;
-            week = 0;
-            savePosition();
-          });
-        },
-        "primary",
-      ),
-    ]);
+  function addMonth() {
+    const next=new Date(calendarMonths(book().sheets).at(-1).key+'-01T12:00:00Z');next.setUTCMonth(next.getUTCMonth()+1);
+    const date=monthField("Месяц",next.toISOString().slice(0,7));
+    modal("Добавить месяц",date.wrap,[button("Добавить",()=>{
+      if(!date.valid())return;
+      document.querySelector("#editor").close();
+      change(b=>{const sheet=addCalendarMonth(b,date.input.value);sheetId=sheet.id;week=0;tablePosition={top:0,left:0};savePosition();});
+    },"primary")]);
   }
   function renderSettings(main, b, sheet) {
     const grid = el("div", undefined, "settings-grid"),
@@ -3103,48 +3107,11 @@ function teacherInterface(api) {
 
     );
     grid.append(table);
-    const current = el("section", undefined, "settings-section");
-    current.append(
-      el("h2", "Текущий лист"),
-      button("Добавить лист · 4 недели", addSheet),
-      button("Переименовать лист", () =>
-        textEdit("Переименовать лист", "Название", sheet.name, (value) =>
-          change((b) => {
-            b.sheets.find((s) => s.id === sheet.id).name = teacherSheetName(
-              b,
-              value,
-              sheet.id,
-            );
-          }),
-        ),
-      ),
-    );
-    const remove = button(
-      "Удалить лист",
-      () =>
-        confirm("Удалить лист?", sheet.name, () =>
-          change((b) => {
-            ensure(b.sheets.length > 1, "Оставьте хотя бы один лист");
-            b.deletedSheetNames = [
-              ...new Set([
-                ...(b.deletedSheetNames ?? []),
-                sheet.sourceName ?? sheet.name,
-              ]),
-            ];
-            b.sheets = b.sheets.filter((s) => s.id !== sheet.id);
-            b.bonus = b.bonus.filter(
-              (op) => !op.markKey?.startsWith(sheet.id + "|"),
-            );
-            sheetId = b.sheets[0].id;
-            week = 0;
-            savePosition();
-          }),
-        ),
-      "danger",
-    );
-    remove.disabled = b.sheets.length === 1;
-    current.append(remove);
-    grid.append(current);
+    const months=calendarMonths(b.sheets),month=currentMonth(months,sheet.id,week),current=el("section",undefined,"settings-section");
+    current.append(el("h2",month.title),button("Добавить месяц",addMonth));
+    const remove=button("Удалить месяц",()=>confirm("Удалить месяц?",month.title+". Отметки месяца удалятся; начисления преподавателя сохранятся.",()=>change(b=>{
+      deleteCalendarMonth(b,month.key);const next=calendarMonths(b.sheets)[0].weeks[0];sheetId=next.sheetId;week=next.index;savePosition();
+    })),"danger");remove.disabled=months.length===1;current.append(remove);grid.append(current);
     const cats = el("section", undefined, "settings-section categories");
     cats.append(el("h2", "Категории"));
     for (const c of b.categories.filter((c) => !c.deleted)) {
@@ -3269,7 +3236,9 @@ function teacherInterface(api) {
         button("Выйти из Яндекса", () => api.logout(), "text-button", "exit"),
       );
     } else {
-      const sheet = b.sheets.find((s) => s.id === sheetId) ?? b.sheets[0];
+      const months=calendarMonths(b.sheets),month=currentMonth(months,sheetId,week);
+      const ref=month.weeks.find(r=>r.sheetId===sheetId&&r.index===week)??month.weeks[0];
+      const sheet=b.sheets.find(s=>s.id===ref.sheetId);week=ref.index;
       if (!detail) main.append(el("h1", b.name, "sr-only"));
       sheetId = sheet.id;
       week = Math.max(0, Math.min(week, sheet.weeks - 1));
@@ -3277,15 +3246,13 @@ function teacherInterface(api) {
       else {
         main.append(selectors(b, sheet, week).firstElementChild);
         const statusRow = el("div", undefined, "table-status");
-        const closed = sheet.closedWeeks?.length === sheet.weeks;
+        const closed = month.weeks.every(ref=>b.sheets.find(s=>s.id===ref.sheetId).closedWeeks?.includes(ref.index));
         statusRow.append(
           button(
-            closed ? "Открыть лист" : "Закрыть лист",
+            closed ? "Открыть месяц" : "Закрыть месяц",
             () =>
               change((b) => {
-                b.sheets.find((s) => s.id === sheet.id).closedWeeks = closed
-                  ? []
-                  : Array.from({ length: sheet.weeks }, (_, w) => w);
+                for(const ref of month.weeks){const target=b.sheets.find(s=>s.id===ref.sheetId);target.closedWeeks=closed?(target.closedWeeks??[]).filter(w=>w!==ref.index):[...new Set([...(target.closedWeeks??[]),ref.index])];}
               }),
             "text-button",
             closed ? "unlock" : "lock",
@@ -3336,7 +3303,7 @@ function teacherInterface(api) {
     reset() {
       bookId = null;
       rememberBook();
-      positionOwner = null;
+      positionOwner = null, tablePosition = {top:0,left:0};
       detail = null;
     },
     hasChanges() {
@@ -3810,54 +3777,23 @@ function render() {
     aside.append(el("h1", view.name));
     const balance = el("div", undefined, "student-balance");
     balance.append(el("span", "Бонусы"), el("strong", String(view.balance)));
-    aside.append(balance);
+
     aside.append(
       button("Изменить ФИО", () => editName(view), "text-button", "edit"),
     );
-    const label = el("label", undefined, "field sheet-field");
-    label.append(el("span", "Лист"));
-    const sheets = el("select");
-    sheets.setAttribute("aria-label", "Лист");
-    for (const s of view.sheets) {
-      const option = el("option", s.name);
-      option.value = s.id;
-      sheets.append(option);
-    }
-    const sheet =
-      view.sheets.find((s) => s.id === selectedSheet) ?? view.sheets[0];
-    if (!sheet) {
-      main.append(el("p", "Преподаватель пока не добавил вас в лист."));
-    } else {
-      if (selectedSheet !== sheet.id) week = 0;
-      selectedSheet = sheet.id;
-      sheets.value = sheet.id;
-      sheets.onchange = () => {
-        selectedSheet = sheets.value;
-        week = 0;
-        savePage();
-        render();
-      };
-      label.append(sheets);
-      aside.append(label);
-      week = Math.max(0, Math.min(week, sheet.weeks - 1));
-      savePage();
-      const weeks = el("div", undefined, "weeks");
-      weeks.setAttribute("aria-label", "Недели");
-      for (let w = 0; w < sheet.weeks; w++) {
-        const b = button(
-          String(w + 1),
-          () => {
-            week = w;
-            savePage();
-            render();
-          },
-          w === week ? "week selected" : "week",
-        );
-        b.setAttribute("aria-label", `Неделя ${w + 1}`);
-        b.setAttribute("aria-pressed", String(w === week));
-        weeks.append(b);
-      }
-      aside.append(weeks);
+    const months=calendarMonths(view.sheets),month=currentMonth(months,selectedSheet,week);
+    const ref=month?.weeks.find(r=>r.sheetId===selectedSheet&&r.index===week)??month?.weeks[0];
+    const sheet=view.sheets.find(s=>s.id===ref?.sheetId);
+    if (!sheet) main.append(el("p","Преподаватель пока не добавил месяц."));
+    else {
+      selectedSheet=ref.sheetId;week=ref.index;savePage();
+      const choose=ref=>{selectedSheet=ref.sheetId;week=ref.index;savePage();render();};
+      const label=el("label",undefined,"field sheet-field"),select=el("select");label.append(el("span","Месяц"));
+      months.forEach(m=>{const option=el("option",m.title);option.value=m.key;select.append(option);});
+      select.value=month.key;select.onchange=()=>choose(months.find(m=>m.key===select.value).weeks[0]);label.append(select);aside.append(label);
+      const weekLabel=el("label",undefined,"field"),weeks=el("select");weekLabel.append(el("span","Неделя"));
+      month.weeks.forEach((r,i)=>{const option=el("option",weekRange(r));option.value=String(i);weeks.append(option);});
+      weeks.value=String(month.weeks.indexOf(ref));weeks.onchange=()=>choose(month.weeks[Number(weeks.value)]);weekLabel.append(weeks);aside.append(weekLabel);
       const awaiting = p.feed.requests.filter(
         (r) => !(r.id in p.view.receipts),
       ).length;
@@ -3886,16 +3822,17 @@ function render() {
           ),
         );
       const days = el("section", undefined, "days");
-      days.setAttribute("aria-label", `Посещаемость за неделю ${week + 1}`);
+      days.setAttribute("aria-label", `Посещаемость за ${weekRange(ref)}`);
       const heading = el("div", undefined, "week-heading");
       heading.append(
-        el("h2", `Неделя ${week + 1}`),
+        el("h2", weekRange(ref)),
         el(
           "span",
           `${sheet.totals[week]} / ${sheet.norms[week]}`,
           "week-total",
         ),
       );
+      heading.append(balance);
       days.append(heading);
       const closed = sheet.closedWeeks?.includes(week);
       if (closed)
