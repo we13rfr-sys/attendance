@@ -141,6 +141,27 @@ function enrollmentReply(response) {
   ensure(typeof response.reply === 'string' && response.reply.length > 0, 'Повреждён ответ преподавателя');
   return response.reply;
 }
+function validateEnrollmentRetry(retry) {
+  ensure(retry && typeof retry.fileId==='string' && /^[A-Za-z0-9-]{1,80}$/.test(retry.fileId) && Number.isSafeInteger(retry.expires) && retry.expires > 0 && Number.isInteger(retry.attempt) && retry.attempt >= 1 && retry.attempt <= 3, 'Повреждён адрес повторной отправки');
+  transferUrl(retry.uploadUrl);
+  ensure(new URL(retry.uploadUrl).hostname.endsWith('.disk.yandex.net'), 'Некорректный адрес повторной отправки');
+  return retry;
+}
+function enrollmentFile(group, rowId) {
+  const retry=group.retryUploads?.[rowId];
+  return group.folder+'/заявки/'+(retry?'повтор-'+validateEnrollmentRetry(retry).fileId:rowId)+'.json';
+}
+function enrollmentResponses(group) {
+  return {...group.responses,...(Object.keys(group.retryUploads??{}).length?{_retry:group.retryUploads}:{})};
+}
+function pendingEnrollmentRetry(pending, responses, now=Date.now()) {
+  const retry=responses._retry?.[pending.studentId];
+  if(!retry)return null;
+  validateEnrollmentRetry(retry);
+  ensure(retry.expires <= now+1_860_000, 'Некорректный срок повторной отправки');
+  ensure(retry.attempt<3 || retry.expires>now, 'Повторные отправки не завершились. Попросите преподавателя новое приглашение');
+  return retry.expires>now && retry.fileId!==pending.retryFileId ? retry : null;
+}
 
 
 // vault
@@ -778,6 +799,15 @@ class Exchange {
       if (responses[pending.studentId]) {
         let reply; try { reply = JSON.parse(text(await openPeer(p.key, unb64(responses[pending.studentId])))); } catch { if (!pending.newName || pending.sent) throw new Error('Строка уже выбрана на другом устройстве'); }
         if (reply) { const code = enrollmentReply(reply); if (code) await this.accept(code); else { pending.sent = true; await this.save(); } }
+      }
+      if(p.enrollment) {
+        const retry=pendingEnrollmentRetry(pending,responses);
+        if(retry) {
+          try {await this.disk.send(retry.uploadUrl,utf8.encode(pending.encrypted));}
+          catch(e) {if(e.status!==409)throw e;}
+          pending.retryFileId=retry.fileId;pending.sent=true;
+          await this.save();await writeStudentBinding(this.disk,p);
+        }
       }
       if (p.enrollment && !pending.sent) {
         ensure(Date.now() < group.expires, 'Приглашение истекло. Попросите новое');
@@ -1885,10 +1915,11 @@ class Teacher {
       if (r.retiredInvitations.includes(g.invitation?.id)) continue;
       if (
         g.collected &&
+        Object.keys(g.retryUploads??{}).every(slot=>slot in g.responses) &&
         Date.now() > g.invitation.expires + 900_000 &&
         Object.keys(g.responses).every((k) => g.acknowledged?.includes(k)) &&
         g.responseHash ===
-          (await hexHash(utf8.encode(JSON.stringify(g.responses))))
+          (await hexHash(utf8.encode(JSON.stringify(enrollmentResponses(g)))))
       )
         continue;
       ensure(
@@ -1901,6 +1932,8 @@ class Teacher {
           Object.keys(g.responses).length <= 600,
       );
       publicUrl(g.url);
+      const retryRows=[...g.invitation.students,...(g.invitation.registrations??[]),...(g.retiredStudents??[])];
+      for(const [slot,retry] of Object.entries(g.retryUploads??{})) {ensure(retryRows.some(row=>row.id===slot));validateEnrollmentRetry(retry);}
       const old = r.invitations.find(
         (x) => x.invitation.id === g.invitation.id,
       );
@@ -1917,7 +1950,14 @@ class Teacher {
         old.acknowledged = [
           ...new Set([...(old.acknowledged ?? []), ...(g.acknowledged ?? [])]),
         ];
+        for(const [slot,retry] of Object.entries(g.retryUploads??{})) {
+          const previous=old.retryUploads?.[slot];
+          if(!previous || retry.attempt>previous.attempt || (retry.attempt===previous.attempt && retry.expires>previous.expires)) {
+            (old.retryUploads??={})[slot]=retry;old.responseHash='';
+          }
+        }
         old.collected ||= g.collected;
+        if(Object.keys(old.retryUploads??{}).some(slot=>!(slot in old.responses)))old.collected=false;
       }
     }
     await this.save();
@@ -2118,7 +2158,7 @@ class Teacher {
       for (const [rowId, encoded] of Object.entries(g.responses)) try {
         if (!encoded || g.acknowledged?.includes(rowId) || this.checkedEnrollmentErrors.has(encoded)) continue;
         let request;
-        try { request = await this.enrollment(g, await this.disk.download(g.folder + "/заявки/" + rowId + ".json")); }
+        try { request = await this.enrollment(g, await this.disk.download(enrollmentFile(g,rowId))); }
         catch (e) { if (e.status === 404) continue; throw e; }
         const response = JSON.parse(text(await openPeer(request.invite.key, unb64(encoded))));
         if (temporaryEnrollmentError(response.error)) {
@@ -2145,21 +2185,21 @@ class Teacher {
           await this.save();
           continue;
         }
-        for (const row of rows.filter(
-          (row) =>
-            !(row.id in g.responses) &&
-            files.some(
-              (f) => f.path === g.folder + "/заявки/" + row.id + ".json",
-            ),
-        )) try {
+        for (const row of rows.filter(row=>!(row.id in g.responses))) try {
+          const path=enrollmentFile(g,row.id),retry=g.retryUploads?.[row.id];
+          if(!files.some(f=>f.path===path)) {
+            if(retry && retry.expires<=Date.now())await this.retryEnrollment(g,row.id);
+            continue;
+          }
+          let bytes;
+          try {bytes=await this.disk.download(path);}
+          catch(e) {
+            if(e.network || (e.status>=500 && e.status<=504)) {await this.retryEnrollment(g,row.id);continue;}
+            throw e;
+          }
           let req;
           try {
-            req = await this.enrollment(
-              g,
-              await this.disk.download(
-                g.folder + "/заявки/" + row.id + ".json",
-              ),
-            );
+            req = await this.enrollment(g,bytes);
             ensure(req.studentId === row.id);
           } catch (e) {
             if (e.status || e.retry || e.network || e.name === "TypeError") throw e;
@@ -2244,12 +2284,12 @@ class Teacher {
           await this.save();
         } catch (e) { failure ??= e; }
         if (
-          (Date.now() > g.invitation.expires + 900_000 && rows.every(row => row.id in g.responses || !files.some(f => f.path === g.folder + "/заявки/" + row.id + ".json"))) ||
+          (Date.now() > g.invitation.expires + 900_000 && rows.every(row => row.id in g.responses || (!g.retryUploads?.[row.id] && !files.some(f => f.path === enrollmentFile(g,row.id))))) ||
           Object.keys(g.responses).length === rows.length
         )
           g.collected = true;
       }
-      const bytes = utf8.encode(JSON.stringify(g.responses)),
+      const bytes = utf8.encode(JSON.stringify(enrollmentResponses(g))),
         h = await hexHash(bytes);
       if (h !== g.responseHash) {
         await this.disk.upload(g.folder + "/ответы.json", bytes, true);
@@ -2259,6 +2299,18 @@ class Teacher {
       }
     } catch (e) { failure ??= e; }
     if (failure) throw failure;
+  }
+  async retryEnrollment(group,rowId) {
+    const previous=group.retryUploads?.[rowId];
+    if(previous && Date.now()<previous.expires-1_740_000)return;
+    ensure((previous?.attempt??0)<3,'Не удалось восстановить заявку после трёх попыток. Студенту нужно новое приглашение');
+    await this.device.requireWriter();
+    const retry={fileId:uid(),expires:Date.now()+1_800_000,attempt:(previous?.attempt??0)+1};
+    retry.uploadUrl=await this.ticket(group.folder+'/заявки/повтор-'+retry.fileId+'.json');
+    validateEnrollmentRetry(retry);
+    (group.retryUploads??={})[rowId]=retry;group.collected=false;
+    await this.save();
+    await this.pushRegistry(group.invitation.bookId);
   }
   async applyFeeds(id) {
     await this.device.requireWriter();
@@ -2507,10 +2559,11 @@ class Teacher {
     for (const g of [...r.invitations])
       if (
         g.collected &&
+        Object.keys(g.retryUploads??{}).every(slot=>slot in g.responses) &&
         Date.now() > g.invitation.expires + 900_000 &&
         Object.keys(g.responses).every((k) => g.acknowledged?.includes(k)) &&
         g.responseHash ===
-          (await hexHash(utf8.encode(JSON.stringify(g.responses))))
+          (await hexHash(utf8.encode(JSON.stringify(enrollmentResponses(g)))))
       ) {
         await this.disk.trash(g.folder);
         r.retiredInvitations = [...new Set([...(r.retiredInvitations ?? []),g.invitation.id])];
