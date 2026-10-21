@@ -1770,12 +1770,13 @@ class Teacher {
       ensure(!old || old.privateKey === g.privateKey);
       if (!old) r.invitations.push(g);
       else {
-        if (
-          Object.entries(g.responses).some(([k, v]) => old.responses[k] !== v)
-        )
-          old.responseHash = "";
-        Object.assign(old.responses, g.responses);
-        old.responsePeers = { ...old.responsePeers, ...g.responsePeers };
+        // A completed local connection must not be replaced by an older remote rejection.
+        for (const [slot, response] of Object.entries(g.responses)) {
+          if (old.responsePeers?.[slot] && old.responses[slot]) continue;
+          if (old.responses[slot] !== response) old.responseHash = "";
+          old.responses[slot] = response;
+          if (g.responsePeers?.[slot]) (old.responsePeers ??= {})[slot] = g.responsePeers[slot];
+        }
         old.acknowledged = [
           ...new Set([...(old.acknowledged ?? []), ...(g.acknowledged ?? [])]),
         ];
@@ -1976,15 +1977,14 @@ class Teacher {
       // Older clients stored a temporary writer lease loss as a permanent enrollment rejection.
       this.checkedEnrollmentErrors ??= new Set();
       for (const [rowId, encoded] of Object.entries(g.responses)) {
-        if (!encoded || g.responsePeers?.[rowId] || this.checkedEnrollmentErrors.has(encoded)) continue;
+        if (!encoded || g.acknowledged?.includes(rowId) || this.checkedEnrollmentErrors.has(encoded)) continue;
         let request;
         try { request = await this.enrollment(g, await this.disk.download(g.folder + "/заявки/" + rowId + ".json")); }
         catch (e) { if (e.status === 404) continue; throw e; }
         const response = JSON.parse(text(await openPeer(request.invite.key, unb64(encoded))));
         if (response.error?.startsWith("Редактирование открыто")) {
-          delete g.responses[rowId]; g.collected = false; await this.save();
-        }
-        this.checkedEnrollmentErrors.add(encoded);
+          delete g.responses[rowId]; if(g.responsePeers) delete g.responsePeers[rowId]; g.collected = false; await this.save();
+        } else this.checkedEnrollmentErrors.add(encoded);
       }
       const rows = [
         ...g.invitation.students,
