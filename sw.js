@@ -1,5 +1,5 @@
-const CACHE = 'attendance-student-ba0eec51907a';
-const SHELL = ['./', './index.html', './style.css', './icon.svg', './apple-touch-icon.png?v=0.2.1', './app-icon-192.png', './app-icon-512.png', './manifest.webmanifest',  './app.js?v=ba0eec51907a'];
+const CACHE = 'attendance-student-f30c4b6a3ff5';
+const SHELL = ['./', './index.html', './style.css', './icon.svg', './apple-touch-icon.png?v=0.2.1', './app-icon-192.png', './app-icon-512.png', './manifest.webmanifest',  './app.js?v=f30c4b6a3ff5'];
 self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL.map(path => new Request(path, { cache: 'reload' })))).then(() => self.skipWaiting())));
 self.addEventListener('activate', event => event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key.startsWith('attendance-student-') && key !== CACHE).map(key => caches.delete(key)))).then(() => self.clients.claim())));
 self.addEventListener('fetch', event => {

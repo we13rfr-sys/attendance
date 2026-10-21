@@ -3901,7 +3901,7 @@ function chooseRole(role) {
   });
 }
 function renderWelcome() {
-  const header = el("header", undefined, "topbar");
+  const header = el("header", undefined, "topbar welcome-topbar");
   header.append(themeMenu());
   const main = el("main", undefined, "connection welcome");
   const logo = el("img");
@@ -3919,7 +3919,7 @@ function renderWelcome() {
     card.append(icon("next"));
     cards.append(card);
   }
-  main.append(cards);
+  main.append(cards, el("p", "Версия 0.3.0", "app-version"));
   root.replaceChildren(header, main);
 }
 function leaveTable() {
