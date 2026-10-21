@@ -353,8 +353,13 @@ class Disk {
     if (/^disk:\/Посещаемость-обмен\/приглашение-[A-Za-z0-9-]+\/заявки\/[A-Za-zА-Яа-я0-9-]+\.json$/.test(path)) {
       // A stalled request is recovered via a new file, not another long download of the same one.
       const signal = AbortSignal.timeout(10_000);
-      const ticket = await this.api("resources/download", {path}, "GET", undefined, signal);
-      return this.fetch(transferUrl(ticket.href), {cache: "no-store", signal}, Math.min(max, 16_000));
+      try {
+        const ticket = await this.api("resources/download", {path}, "GET", undefined, signal);
+        return await this.fetch(transferUrl(ticket.href), {cache: "no-store", signal}, Math.min(max, 16_000));
+      } catch (e) {
+        if (signal.aborted && !e.status) e.network = true;
+        throw e;
+      }
     }
     return this.downloadFile("resources/download", {path}, max);
   }
