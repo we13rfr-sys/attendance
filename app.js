@@ -177,7 +177,7 @@ class Vault {
       tx.onerror = () => reject(tx.error);
       tx.onabort = () =>
         reject(
-          tx.error ?? new Error("Не удалось сохранить данные на устройстве"),
+          tx.error ?? new Error("Не удалось сохранить данные в этом браузере"),
         );
     });
   }
@@ -255,7 +255,7 @@ class Disk {
       });
     } catch {
       throw new Error(
-        "Не удалось связаться с Яндексом. Изменения сохранены на устройстве",
+        "Не удалось связаться с Яндексом. Изменения сохранены в этом браузере",
       );
     }
     if (!response.ok) {
@@ -789,10 +789,6 @@ function teacherNewBook(name, start) {
         norms: [3, 3, 3, 3],
         marks: {},
         closedWeeks: [],
-        sourceRows: {},
-        sourceColumns: [],
-        sourceNormRow: 0,
-        sourceIdColumn: 0,
       },
     ],
     categories: teacherDefaults(),
@@ -802,7 +798,7 @@ function teacherNewBook(name, start) {
     studentReceipts: {},
     localRevision: 0,
     syncedRevision: 0,
-    status: "Сохранено на устройстве",
+    status: "Сохранено в этом браузере",
   };
 }
 function teacherBookName(value) {
@@ -814,24 +810,6 @@ function teacherBookName(value) {
       value !== "." &&
       value !== "..",
     "Проверьте название таблицы",
-  );
-  return value;
-}
-function teacherSheetName(book, value, except) {
-  value = studentName(value);
-  ensure(
-    value.length <= 31 &&
-      !/[\[\]:*?/\\]/.test(value) &&
-      !value.startsWith("'") &&
-      !value.endsWith("'") &&
-      !/^_Attendance/i.test(value) &&
-      value !== "Бонусы" &&
-      !book.sheets.some(
-        (s) =>
-          s.id !== except &&
-          s.name.toLocaleLowerCase("ru") === value.toLocaleLowerCase("ru"),
-      ),
-    "Название листа должно быть уникальным, до 31 символа, без []:*?/\\",
   );
   return value;
 }
@@ -1171,7 +1149,7 @@ function monthSheet(key,students=[]) {
   ensure(/^\d{4}-\d{2}$/.test(key)&&new Date(key+'-01T12:00:00Z').toISOString().slice(0,7)===key,'Выберите месяц');
   const first=key+'-01',start=addDays(first,(8-new Date(first+'T12:00:00Z').getUTCDay())%7);
   let weeks=0;while(addDays(start,weeks*7).slice(0,7)===key)weeks++;
-  return {id:uid(),name:monthTitle(key),start,weeks,dateView:'NUMBER',students:[...students],norms:Array(weeks).fill(3),marks:{},closedWeeks:[],sourceRows:{},sourceColumns:[],sourceNormRow:0,sourceIdColumn:0};
+  return {id:uid(),name:monthTitle(key),start,weeks,dateView:'NUMBER',students:[...students],norms:Array(weeks).fill(3),marks:{},closedWeeks:[]};
 }
 function addCalendarMonth(book,key) {
   ensure(!calendarMonths(book.sheets).some(m=>m.key===key),'Этот месяц уже есть в журнале');
@@ -1228,11 +1206,9 @@ function readJournalData(bytes) {
   const book = root.journal;
   delete book.pendingUploadHash;
   teacherValidate(book);
-  for (const sheet of book.sheets)
-    Object.assign(sheet, {sourceRows:{}, sourceColumns:[], sourceNormRow:0, sourceIdColumn:0});
   return Object.assign(book, {dirty:false, status:"Синхронизировано с Диском"});
 }
-async function readJournalFile(bytes, path, name, base) {
+async function readJournalFile(bytes, path) {
   ensure(isJournalData(path), "Неподдерживаемый файл группы");
   return readJournalData(bytes);
 }
@@ -1264,6 +1240,25 @@ async function recoverWebJournal(book,disk,backup,publish) {
   ensure((await disk.api('resources',{path:original})).sha256?.toLowerCase()===revision,'Исходный файл изменился. Восстановление остановлено');
   const next={...book,diskPath:destination,remoteHash:hash,baseData:b64(bytes),baseModel:JSON.stringify(journalPayload(book)),dirty:false,pendingUploadHash:null,syncedRevision:book.localRevision,status:'Синхронизировано с Диском'};
   await publish(next);return next;
+}
+
+
+// registry-recovery
+function registryContent(bytes){const value=JSON.parse(text(bytes));delete value.storageRevision;return value;}
+async function readTeacherRegistry(path,id,copies,disk,requireWriter,remember){
+ try {const bytes=await disk.download(path);await remember(bytes);return bytes;}
+ catch(error){
+  if(!error.storageUnavailable)throw error;
+  const revision=(await disk.api('resources',{path})).sha256?.toLowerCase();
+  let original;for(const bytes of copies)if(await hexHash(bytes)===revision){original=bytes;break;}
+  ensure(original,'Подключения группы недоступны в Яндексе; нет точной копии этой версии в этом браузере. Привязки сохранены');
+  const root=registryContent(original);ensure(root.version===1&&root.bookId===id,'Копия подключений относится к другой группе');
+  await requireWriter();
+  ensure((await disk.api('resources',{path})).sha256?.toLowerCase()===revision,'Подключения изменились на другом устройстве. Повторим синхронизацию');
+  const bytes=utf8.encode(JSON.stringify({...root,storageRevision:uid()}));
+  await remember(original);await remember(bytes);await disk.upload(path,bytes,true);await disk.verifyUpload(path,bytes);
+  return bytes;
+ }
 }
 
 
@@ -1401,7 +1396,6 @@ function teacherMerge(base, local, remote, path = "таблица") {
       return local.map((v, i) =>
         teacherMerge(base[i], v, remote[i], path + "/" + i),
       );
-    if (path.endsWith("sourceColumns")) return remote;
   }
   if (
     local &&
@@ -1612,7 +1606,7 @@ class Teacher {
     next.localRevision = (original.localRevision ?? 0) + 1;
     next.status = next.diskPath
       ? "Ожидает синхронизации"
-      : "Сохранено на устройстве";
+      : "Сохранено в этом браузере";
     this.account.books[this.books.indexOf(original)] = next;
     try {
       await this.save();
@@ -1644,7 +1638,7 @@ class Teacher {
     await this.device.requireWriter();
     const old = this.get(id),
       bytes = await this.disk.download(old.diskPath, 20_000_000),
-      next = await readJournalFile(bytes, old.diskPath, old.name);
+      next = await readJournalFile(bytes, old.diskPath);
     ensure(next.id === id, "На Диске другая таблица");
     Object.assign(next, {
       diskPath: old.diskPath,
@@ -2284,8 +2278,6 @@ class Teacher {
       const remote = await readJournalFile(
         bytes,
         path,
-        b.name,
-        b.baseModel ? JSON.parse(b.baseModel) : undefined,
       );
       ensure(remote.id === b.id, "Идентификатор таблицы на Диске изменился");
       if (b.dirty) {
@@ -3945,7 +3937,7 @@ function render() {
       const status = el(
         "p",
         dirty
-          ? "Сохранено на устройстве. Ожидает отправки"
+          ? "Сохранено в этом браузере. Ожидает отправки"
           : awaiting
             ? "Отправлено преподавателю"
             : "Синхронизировано",
