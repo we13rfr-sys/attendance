@@ -1694,10 +1694,20 @@ class Teacher {
     ensure(/^[A-Za-z0-9-]{1,80}$/.test(id));
     return `${teacherFolder}/привязки-${id}.json`;
   }
+  async rememberRegistry(id,bytes) {
+    this.account.registryCopies??={};const copies=this.account.registryCopies[id]??[],encoded=b64(bytes);
+    if(copies[0]===encoded)return;
+    this.account.registryCopies[id]=[encoded,...copies.filter(c=>c!==encoded)].slice(0,2);await this.save();
+  }
+  async readRegistry(id) {
+    const copies=(this.account.registryCopies?.[id]??[]).map(unb64);
+    copies.push(utf8.encode(JSON.stringify(this.registry(id))));
+    return readTeacherRegistry(this.registryPath(id),id,copies,this.disk,()=>this.device.requireWriter(),bytes=>this.rememberRegistry(id,bytes));
+  }
   async pullRegistry(id) {
     let bytes;
     try {
-      bytes = await this.disk.download(this.registryPath(id));
+      bytes = await this.readRegistry(id);
     } catch (e) {
       if (e.status === 404) return null;
       throw e;
@@ -1792,11 +1802,11 @@ class Teacher {
     await this.device.requireWriter();
     const before = await this.pullRegistry(id),
       bytes = utf8.encode(JSON.stringify(this.registry(id)));
-    if (before && (await hexHash(before)) === (await hexHash(bytes))) return;
+    if (before && teacherEqual(registryContent(before),registryContent(bytes))) return;
     if (!before) await this.disk.folder(teacherFolder);
     let current;
     try {
-      current = await this.disk.download(this.registryPath(id));
+      current = await this.readRegistry(id);
     } catch (e) {
       if (e.status !== 404) throw e;
     }
@@ -1805,6 +1815,7 @@ class Teacher {
         (before ? await hexHash(before) : null),
       "Подключения изменились на другом устройстве. Повторим автоматически",
     );
+    await this.rememberRegistry(id,bytes);
     await this.disk.upload(this.registryPath(id), bytes, !!before);
     await this.disk.verifyUpload(this.registryPath(id), bytes);
   }
