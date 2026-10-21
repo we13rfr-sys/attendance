@@ -456,7 +456,7 @@ class Disk {
     }
     throw new Error("На Диске слишком много файлов для одного списка");
   }
-  async trash(path) {
+  async trash(path, md5) {
     ensure(
       typeof path === "string" &&
         path.startsWith("disk:/") &&
@@ -467,7 +467,7 @@ class Disk {
     try {
       operation = await this.api(
         "resources",
-        { path, permanently: false, force_async: false },
+        { path, permanently: false, force_async: false, ...(md5 && {md5}) },
         "DELETE",
       );
     } catch (e) {
@@ -537,6 +537,44 @@ async function readStudentFeed(disk, p) {
 function studentBindingPath(bookId) {
   ensure(typeof bookId === 'string' && /^[A-Za-z0-9-]{1,80}$/.test(bookId));
   return `disk:/Посещаемость-обмен/студент-${bookId}.json`;
+}
+async function deletePendingStudentFiles(disk, p) {
+  ensure(p?.enrollment && !p.viewUrl && !p.view && !p.feed.requests.length, 'Можно удалить только незавершённое подключение без отметок');
+  const bookId = p.enrollment.invitation.bookId, bindingPath = studentBindingPath(bookId);
+  validateStudentBinding({version:1,bookId,profile:p}, bookId);
+  const metadata = async path => {
+    try { return await disk.api('resources', {path,fields:'type,size,sha256,md5'}); }
+    catch (e) { if (e.status === 404) return null; throw e; }
+  };
+  const binding = async () => {
+    let bytes;
+    try { bytes = await disk.download(bindingPath); }
+    catch (e) { if (e.status === 404) return null; throw e; }
+    const current = validateStudentBinding(JSON.parse(text(bytes)), bookId);
+    ensure(current.peerId === p.peerId && current.key === p.key && current.enrollment && !current.viewUrl && !current.revoked, 'Подключение уже изменилось. Обновите журнал перед удалением');
+    const meta = await metadata(bindingPath);
+    ensure(meta?.sha256 === await hexHash(bytes) && /^[a-f0-9]{32}$/i.test(meta.md5 ?? ''), 'Файл подключения изменился. Повторите проверку');
+    return meta;
+  };
+  const owner = await binding(), before = await metadata(p.requestPath);
+  if (before) {
+    ensure(before.type === 'file' && /^[a-f0-9]{32}$/i.test(before.md5 ?? ''), 'Не удалось проверить файл заявки');
+    let bytes;
+    try { bytes = await disk.download(p.requestPath); }
+    catch (e) {
+      const empty = utf8.encode(JSON.stringify({peerId:p.peerId,requests:[]}));
+      if (!(e.storageUnavailable || e.network) || !owner || before.size !== empty.length + 28) throw e;
+    }
+    if (bytes) {
+      const feed = JSON.parse(text(await openPeer(p.key, bytes)));
+      ensure(feed.peerId === p.peerId && Array.isArray(feed.requests) && !feed.requests.length && !feed.enrollmentId && before.sha256 === await hexHash(bytes), 'В файле уже есть данные подключения. Удаление остановлено');
+    }
+    await binding();
+    await disk.trash(p.requestPath, before.md5);
+  }
+  // Conditional deletion protects a newer binding written by another browser.
+  const latest = await binding();
+  if (latest) await disk.trash(bindingPath, latest.md5);
 }
 function validateStudentBinding(record, bookId) {
   const p = record?.profile;
@@ -757,6 +795,14 @@ class Exchange {
     ensure(!p || await hash(JSON.stringify(p.feed)) === p.feedHash, 'Дождитесь отправки изменений перед выходом');
     const next = { ...this.state, active: null, saved: p ? [p, ...this.state.saved.filter(old => old.peerId !== p.peerId)] : this.state.saved, chooseTable: true };
     await this.vault.save(next); this.state = next;
+  }
+  async cancelPending() {
+    const p = this.state.active;
+    await deletePendingStudentFiles(this.disk, p);
+    this.state.active = null;
+    this.state.saved = this.state.saved.filter(old => old.peerId !== p.peerId);
+    this.state.chooseTable = true;
+    await this.save();
   }
 }
 
@@ -3803,6 +3849,17 @@ function leaveTable() {
     ],
   );
 }
+function cancelPending() {
+  modal("Удалить незавершённое подключение?", el("p", "Файлы этой попытки на вашем Яндекс Диске будут перемещены в корзину. После этого можно снова ввести ссылку и отправить заявку. Вход в Яндекс сохранится."), [
+    button("Удалить", () => {
+      dialog.close();
+      operate(async () => {
+        await exchange.cancelPending();
+        group = null; groupUrl = ""; registering = false; registrationName = ""; pageKey = "";
+      }, "Удаление файлов подключения…");
+    }, "primary"),
+  ]);
+}
 function savePage() {
   try {
     localStorage.setItem(
@@ -4150,6 +4207,7 @@ function render() {
       }
     }
   }
+  if (p?.enrollment && !p.viewUrl && !view) main.append(button("Удалить незавершённое подключение", cancelPending, "text-button"));
   const footer = el("footer", undefined, "bottom-bar");
   if (logged)
     footer.append(button("Выйти из Яндекса", logout, "text-button", "exit"));
