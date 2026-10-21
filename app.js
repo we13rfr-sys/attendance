@@ -407,9 +407,13 @@ class Disk {
         },
       },
     );
-    return publicUrl(
-      (await this.api("resources", { path, fields: "public_url" })).public_url,
-    );
+    // Publishing may finish before the public URL appears in resource metadata.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const value = (await this.api("resources", { path, fields: "public_url" })).public_url;
+      if (value) return publicUrl(value);
+      if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 500 * 2 ** attempt));
+    }
+    throw new DiskError(503, "Яндекс ещё готовит ссылку подключения. Повторим автоматически", 5000);
   }
   async publicFile(url, maxAge = 0) {
     publicUrl(url);
@@ -3773,7 +3777,7 @@ async function operate(fn, label = "Подождите…") {
       teacher = null;
     }
     if (e.retry) retryAt = Date.now() + e.retry;
-    showError(e.message ?? "Не удалось выполнить действие", e.network);
+    showError(e.message ?? "Не удалось выполнить действие", e.network || !!e.retry || e instanceof TeacherExchangeWarning);
   } finally {
     root.inert = false;
     working = false;
@@ -4375,7 +4379,7 @@ async function poll() {
       }
       if (!exchange.state.active) render();
       if (e.retry) retryAt = Date.now() + e.retry;
-      showError(e.message, e.network);
+      showError(e.message, true);
     } finally {
       schedule();
     }
