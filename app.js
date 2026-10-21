@@ -254,9 +254,9 @@ class Disk {
         signal: AbortSignal.timeout(30_000),
       });
     } catch {
-      throw new Error(
+      throw Object.assign(new Error(
         "Не удалось связаться с Яндексом. Изменения сохранены в этом браузере",
-      );
+      ), {network: true});
     }
     if (!response.ok) {
       const retry = diskRetryDelay(response.headers.get("Retry-After"));
@@ -323,8 +323,18 @@ class Disk {
     return bytes.length ? JSON.parse(new TextDecoder().decode(bytes)) : {};
   }
   async download(path, max = 4_000_000) {
-    const ticket = await this.api("resources/download", { path });
-    return this.fetch(transferUrl(ticket.href), {}, max);
+    return this.downloadFile("resources/download", {path}, max);
+  }
+  async downloadFile(endpoint, params, max = 4_000_000) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const ticket = await this.api(endpoint, params);
+        return await this.fetch(transferUrl(ticket.href), {cache: "no-store"}, max);
+      } catch (e) {
+        // A stale download redirect can lack CORS headers; retry a fresh ticket once.
+        if (!e.network || attempt > 0) throw e;
+      }
+    }
   }
   async upload(path, bytes, overwrite) {
     const pause = this.pauses.get(path) ?? 0;
@@ -401,10 +411,7 @@ class Disk {
         this.readBackoff = 60_000;
         return this.cache.get(url).bytes;
       }
-      const ticket = await this.api("public/resources/download", {
-        public_key: url,
-      });
-      const bytes = await this.fetch(transferUrl(ticket.href));
+      const bytes = await this.downloadFile("public/resources/download", {public_key: url});
       // The file is authenticated by AES-GCM on receipt; MD5 is only a revision hint.
       if (meta.md5) {
         this.cache.delete(url);
@@ -3510,15 +3517,23 @@ function field(label, options = {}) {
   wrap.append(input);
   return { wrap, input };
 }
-function showError(message) {
+function showError(message, network = false) {
   if (!message || message === lastNotice) return;
   lastNotice = message;
   clearTimeout(noticeTimer);
   notice.querySelector("p").textContent = message;
+  notice.dataset.network = String(network);
   notice.hidden = false;
   noticeTimer = setTimeout(() => {
     lastNotice = "";
   }, 30_000);
+}
+function clearNetworkNotice() {
+  if (notice.dataset.network !== "true") return;
+  notice.hidden = true;
+  notice.dataset.network = "false";
+  lastNotice = "";
+  clearTimeout(noticeTimer);
 }
 notice.querySelector("button").onclick = () => {
   notice.hidden = true;
@@ -3561,6 +3576,7 @@ async function operate(fn, label = "Подождите…") {
   try {
     if (polling) await polling;
     await fn();
+    clearNetworkNotice();
     retryAt = 0;
   } catch (e) {
     if (e.status === 401) {
@@ -3568,7 +3584,7 @@ async function operate(fn, label = "Подождите…") {
       teacher = null;
     }
     if (e.retry) retryAt = Date.now() + e.retry;
-    showError(e.message ?? "Не удалось выполнить действие");
+    showError(e.message ?? "Не удалось выполнить действие", e.network);
   } finally {
     root.inert = false;
     working = false;
@@ -3735,7 +3751,7 @@ function savePage() {
       JSON.stringify({ sheetId: selectedSheet, week, wholeMonth }),
     );
   } catch {
-    showError("Не удалось запомнить лист и неделю на этом устройстве");
+    showError("Не удалось запомнить лист и неделю в этом браузере");
   }
 }
 function confirmStudent(group, student) {
@@ -4122,6 +4138,7 @@ async function poll() {
         await teacher.device.refresh();
         if((!wasVerified || couldWrite!==teacher.writable) && !dialog.open && !["INPUT","SELECT"].includes(document.activeElement?.tagName))render();
         await teacher.sync();
+        clearNetworkNotice();
         await updateDirty();
         if (
           (before !== JSON.stringify(teacher.account) || couldWrite !== teacher.writable) &&
@@ -4147,6 +4164,7 @@ async function poll() {
       }
       const before = JSON.stringify(exchange.state.active);
       await exchange.sync();
+      clearNetworkNotice();
       await updateDirty();
       if (before !== JSON.stringify(exchange.state.active)) render();
     } catch (e) {
@@ -4156,7 +4174,7 @@ async function poll() {
       }
       if (!exchange.state.active) render();
       if (e.retry) retryAt = Date.now() + e.retry;
-      showError(e.message);
+      showError(e.message, e.network);
     } finally {
       schedule();
     }
