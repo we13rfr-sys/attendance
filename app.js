@@ -3135,7 +3135,7 @@ function teacherInterface(api) {
     main.append(periods);
     const refs=detail.wholeSheet?month.weeks:[ref],stats=teacherMonthStats(b,refs,row.id),summary=el("section",undefined,"attendance-summary pinned-summary");
     summary.setAttribute("aria-label",detail.wholeSheet?"Статистика за месяц":"Статистика за неделю");
-    summary.append(el("p",`Выполнено ${stats.completed} / ${stats.norm} · осталось ${stats.remaining}`),el("p","Бонусы: "+teacherBalance(b,row.id)));
+    summary.append(el("p",`Норма пар ${stats.completed} / ${stats.norm} · осталось ${stats.remaining}`),el("p","Бонусы: "+teacherBalance(b,row.id)));
     main.append(summary);
     if(stats.categories.length) {
       const breakdown=el("div",undefined,"category-breakdown");const list=el("dl",undefined,"category-statistics");
@@ -4007,7 +4007,7 @@ function render() {
       heading.append(
         el(
           "span",
-          `Выполнено ${completed} / ${norm}`,
+          `Норма пар ${completed} / ${norm}`,
           "week-total",
         ),
       );
