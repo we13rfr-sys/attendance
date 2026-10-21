@@ -1206,7 +1206,7 @@ function journalDataPath(id) {
 }
 function journalPayload(book) {
   const result = structuredClone(book);
-  for (const key of ["baseData", "baseModel", "remoteHash", "status", "dirty", "diskPath", "accessWarning", "documentsUrl", "localRevision", "syncedRevision"])
+  for (const key of ["pendingUploadHash", "baseData", "baseModel", "remoteHash", "status", "dirty", "diskPath", "accessWarning", "documentsUrl", "localRevision", "syncedRevision"])
     delete result[key];
   result.studentReceipts ??= {};
   result.deletedSheetNames ??= [];
@@ -1226,6 +1226,7 @@ function readJournalData(bytes) {
   const root = JSON.parse(text(bytes));
   ensure(root.format === "attendance-journal" && root.version === 1, "Неподдерживаемый формат журнала");
   const book = root.journal;
+  delete book.pendingUploadHash;
   teacherValidate(book);
   for (const sheet of book.sheets)
     Object.assign(sheet, {sourceRows:{}, sourceColumns:[], sourceNormRow:0, sourceIdColumn:0});
@@ -1239,7 +1240,8 @@ async function readJournalFile(bytes, path, name, base) {
 
 // recovery
 class RecoveryAttempts {
-  reset(){this.path=null;this.count=0;}
+  reset(){this.path=null;this.count=0;this.retryAt=0;}
+  failed(now=Date.now()){this.retryAt=now+60_000;}
   ready(path,error,now=Date.now()) {
     if(!error.storageUnavailable){this.reset();return false;}
     if(this.path!==path){this.path=path;this.first=now;this.count=0;}
@@ -1252,7 +1254,7 @@ async function recoverWebJournal(book,disk,backup,publish) {
   const original=book.diskPath,metadata=await disk.api('resources',{path:original}),revision=metadata.sha256?.toLowerCase();
   let base;try{base=book.baseData?unb64(book.baseData):null;}catch{}
   const output=writeJournalData(book);
-  ensure(revision && ((base && await hexHash(base)===book.remoteHash && revision===book.remoteHash) || revision===await hexHash(output)),
+  ensure(revision && (revision===book.pendingUploadHash || (base && await hexHash(base)===book.remoteHash && revision===book.remoteHash) || revision===await hexHash(output)),
     'На Диске другая версия. Автовосстановление остановлено, локальные правки сохранены');
   await backup();
   const destination=journalDataPath(uid()),data=JSON.parse(text(output));data.storageRevision=uid();
@@ -1260,7 +1262,7 @@ async function recoverWebJournal(book,disk,backup,publish) {
   await disk.upload(destination,bytes,false);
   ensure(await hexHash(await disk.download(destination,20_000_000))===hash,'Новый файл не прошёл проверку. Группа остаётся подключена к исходному файлу');
   ensure((await disk.api('resources',{path:original})).sha256?.toLowerCase()===revision,'Исходный файл изменился. Восстановление остановлено');
-  const next={...book,diskPath:destination,remoteHash:hash,baseData:b64(bytes),baseModel:JSON.stringify(journalPayload(book)),dirty:false,syncedRevision:book.localRevision,status:'Синхронизировано с Диском'};
+  const next={...book,diskPath:destination,remoteHash:hash,baseData:b64(bytes),baseModel:JSON.stringify(journalPayload(book)),dirty:false,pendingUploadHash:null,syncedRevision:book.localRevision,status:'Синхронизировано с Диском'};
   await publish(next);return next;
 }
 
@@ -2231,6 +2233,7 @@ class Teacher {
     if(!this.recoveryAttempts.has(id))this.recoveryAttempts.set(id,new RecoveryAttempts());
     const book=this.get(id);
     if(!this.recoveryAttempts.get(id).ready(book.diskPath,error))return false;
+    try {
     await this.device.requireWriter();
     const snapshot=structuredClone(book);
     const checkCatalog=async()=>{const record=(await this.device.catalog()).find(r=>r.id===id);ensure(record&&!record.deleted&&record.path===snapshot.diskPath,'Подключение группы изменилось. Обновите список групп');};
@@ -2245,8 +2248,9 @@ class Teacher {
     });
     const current=this.get(id);
     const pending=current.localRevision!==snapshot.localRevision;
-    Object.assign(current,{diskPath:next.diskPath,remoteHash:next.remoteHash,baseData:next.baseData,baseModel:next.baseModel,syncedRevision:next.syncedRevision,dirty:pending,status:pending?'Ожидает синхронизации':next.status});
+    Object.assign(current,{pendingUploadHash:null,diskPath:next.diskPath,remoteHash:next.remoteHash,baseData:next.baseData,baseModel:next.baseModel,syncedRevision:next.syncedRevision,dirty:pending,status:pending?'Ожидает синхронизации':next.status});
     await this.save();return true;
+    } catch(e) {this.recoveryAttempts.get(id).failed();throw e;}
   }
   async syncBook(id) {
     let b = this.get(id);
@@ -2327,6 +2331,7 @@ class Teacher {
       );
       const destination = b.diskPath;
       try {
+        b.pendingUploadHash=await hexHash(output);await this.save();
         await this.disk.upload(destination, output, true);
         await this.disk.verifyUpload(destination, output);
       } catch(e) {if(await this.automaticRecovery(id,e))return this.syncBook(id);throw e;}
@@ -2334,6 +2339,7 @@ class Teacher {
       const current = this.get(id);
       Object.assign(current, {
         remoteHash: await hexHash(output),
+        pendingUploadHash:null,
         baseData: b64(output),
         baseModel: JSON.stringify(teacherClean(snapshot)),
         diskPath:destination,
@@ -3452,6 +3458,7 @@ let exchange,
   registrationName = "",
   selectedSheet,
   week = 0,
+  wholeMonth = false,
   pageKey = "",
   working = false,
   polling,
@@ -3733,7 +3740,7 @@ function savePage() {
   try {
     localStorage.setItem(
       pageKey,
-      JSON.stringify({ sheetId: selectedSheet, week }),
+      JSON.stringify({ sheetId: selectedSheet, week, wholeMonth }),
     );
   } catch {
     showError("Не удалось запомнить лист и неделю на этом устройстве");
@@ -3897,6 +3904,7 @@ function render() {
       selectedSheet =
         typeof saved?.sheetId === "string" ? saved.sheetId : undefined;
       week = Number.isInteger(saved?.week) ? saved.week : 0;
+      wholeMonth = saved?.wholeMonth === true;
     }
     const aside = el("section", undefined, "student-panel");
     aside.append(el("h1", view.name));
@@ -3922,7 +3930,15 @@ function render() {
         const item=button(weekRange(r),()=>choose(r),`week${selected?" selected":""}`);
         item.setAttribute("aria-pressed",String(selected));weeks.append(item);
       }
-      aside.append(weeks);
+      const mode=el("div",undefined,"weeks");mode.setAttribute("aria-label","Период просмотра");
+      for(const [title,all] of [["Неделя",false],["Месяц",true]]) {
+        const control=button(title,()=>{wholeMonth=all;savePage();render();},`week${wholeMonth===all?" selected":""}`);
+        control.setAttribute("aria-pressed",String(wholeMonth===all));mode.append(control);
+      }
+      aside.append(mode);if(!wholeMonth)aside.append(weeks);
+      const period=wholeMonth?month.weeks:[ref];
+      const completed=period.reduce((n,r)=>n+view.sheets.find(s=>s.id===r.sheetId).totals[r.index],0);
+      const norm=period.reduce((n,r)=>n+view.sheets.find(s=>s.id===r.sheetId).norms[r.index],0);
       const awaiting = p.feed.requests.filter(
         (r) => !(r.id in p.view.receipts),
       ).length;
@@ -3951,17 +3967,20 @@ function render() {
           ),
         );
       const days = el("section", undefined, "days");
-      days.setAttribute("aria-label", `Посещаемость за ${weekRange(ref)}`);
+      days.setAttribute("aria-label", `Посещаемость за ${wholeMonth?month.title:weekRange(ref)}`);
       const heading = el("div", undefined, "week-heading");
       heading.append(
         el(
           "span",
-          `Выполнено ${sheet.totals[week]} / ${sheet.norms[week]}`,
+          `Выполнено ${completed} / ${norm}`,
           "week-total",
         ),
       );
       heading.append(balance);
       days.append(heading);
+      for(const target of period) {
+      const sheet=view.sheets.find(s=>s.id===target.sheetId),week=target.index;
+      if(wholeMonth)days.append(el("h2",weekRange(target)));
       const closed = sheet.closedWeeks?.includes(week);
       if (closed)
         days.append(el("p", "Неделя закрыта преподавателем", "closed"));
@@ -4001,6 +4020,7 @@ function render() {
         if (!closed) row.append(icon("next"));
         days.append(row);
       });
+      }
       main.append(aside, days);
     }
   } else if (p?.enrollment?.sent || p?.viewUrl) {
