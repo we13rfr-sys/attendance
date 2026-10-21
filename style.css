@@ -80,3 +80,6 @@
 .welcome-topbar{justify-content:flex-end}.welcome-topbar .theme>span{display:inline}.app-version{font-size:.875rem;color:var(--muted)}
 .teacher-controls>.week-picker{flex:1 1 100%;margin:8px 0 20px}.weeks{gap:10px}.weeks .week{padding-inline:12px}
 @media(forced-colors:active){:root select:not([multiple]){appearance:auto;-webkit-appearance:auto;background-image:none;padding-inline-end:14px}}
+
+.connection-status{margin:0;padding:8px 20px;color:var(--muted);font-size:.85rem;background:var(--surface)}
+#notice{padding:10px 16px}#notice p{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}

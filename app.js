@@ -1,5 +1,29 @@
 // Посещаемость. Секретов и пользовательских данных здесь нет.
 
+// diagnostics
+const LOG_KEY = "attendance-diagnostics";
+let entries = [];
+try { entries = JSON.parse(localStorage.getItem(LOG_KEY) || "[]"); } catch {}
+if (!Array.isArray(entries)) entries = [];
+function safeLogMessage(value) {
+  return String(value ?? "").replace(/https?:\/\/\S+/gi, "[URL]").replace(/(OAuth|Bearer)\s+\S+/gi, "$1 [redacted]").replace(/((?:access_token|refresh_token|client_secret|token|key)\s*[=:]\s*)[^\s,;]+/gi, "$1[redacted]").slice(0, 1200);
+}
+function recordDiagnostic(stage, error) {
+  const entry = {time: new Date().toISOString(), stage, status: error?.status, message: safeLogMessage(error?.message ?? error)};
+  entries.push(entry);
+  entries = entries.slice(-300);
+  try { localStorage.setItem(LOG_KEY, JSON.stringify(entries)); } catch {}
+  console.error("[Attendance]", entry.stage, entry.status ?? "", entry.message);
+}
+function downloadLogs() {
+  const file = new Blob([JSON.stringify({version: "0.3.0", platform: "web", entries}, null, 2)], {type: "text/plain;charset=utf-8"});
+  const url = URL.createObjectURL(file), link = document.createElement("a");
+  link.href = url; link.download = "attendance-logs-" + new Date().toISOString().replace(/[:.]/g, "-") + ".txt";
+  document.body.append(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+
 // protocol
 function ensure(value, message = 'Повреждены данные подключения') { if (!value) throw new Error(message); }
 const utf8 = new TextEncoder();
@@ -280,11 +304,13 @@ class Disk {
         signal: options.signal ?? AbortSignal.timeout(30_000),
       });
     } catch {
+      recordDiagnostic("disk-network", "Запрос к Яндексу не завершился");
       throw Object.assign(new Error(
         "Не удалось связаться с Яндексом. Изменения сохранены в этом браузере",
       ), {network: true});
     }
     if (!response.ok) {
+      if (![404,409].includes(response.status)) recordDiagnostic("disk-http", {status:response.status,message:"Яндекс отклонил запрос"});
       const retry = diskRetryDelay(response.headers.get("Retry-After"));
       let storageUnavailable=false;
       if(response.status>=500 && response.status<=504 && response.body) {
@@ -862,12 +888,15 @@ class Exchange {
     const p = this.state.active; ensure(p?.view, 'Дождитесь подключения'); ensure(p.feed.requests.length < 2000, 'Достигнут лимит запросов. Обратитесь к преподавателю');
     const r = { id: uid(), ...request }; applyRequest(pendingView(p), r); p.feed.requests.push(r); await this.save();
   }
+  pendingConnection() { const p = this.state.active; return !!p && !p.revoked && !p.view && (!!p.enrollment || !!p.viewUrl); }
   async logout() {
+    ensure(!this.pendingConnection(), 'Ожидаем подключения у преподавателя');
     const p = this.state.active; if (p && await hash(JSON.stringify(p.feed)) !== p.feedHash) await this.sync();
     ensure(!p || await hash(JSON.stringify(p.feed)) === p.feedHash, 'Дождитесь отправки изменений перед выходом');
     delete this.state.oauth; await this.requireLogin();
   }
   async leaveTable() {
+    ensure(!this.pendingConnection(), 'Ожидаем подключения у преподавателя');
     const p = this.state.active; if (p && await hash(JSON.stringify(p.feed)) !== p.feedHash) await this.sync();
     ensure(!p || await hash(JSON.stringify(p.feed)) === p.feedHash, 'Дождитесь отправки изменений перед выходом');
     const next = { ...this.state, active: null, saved: p ? [p, ...this.state.saved.filter(old => old.peerId !== p.peerId)] : this.state.saved, chooseTable: true };
@@ -3621,6 +3650,7 @@ function teacherInterface(api) {
         }
       }
     }
+    footer.append(button("Скачать логи", downloadLogs, "text-button"));
     api.root.replaceChildren(header, main, footer);
     savePosition();
     writeNavigation();
@@ -3722,6 +3752,7 @@ function field(label, options = {}) {
   return { wrap, input };
 }
 function showError(message, network = false) {
+  if (network) { reportFailure({message}, true); return; }
   if (!message || message === lastNotice) return;
   lastNotice = message;
   clearTimeout(noticeTimer);
@@ -3732,7 +3763,21 @@ function showError(message, network = false) {
     lastNotice = "";
   }, 30_000);
 }
+function reportFailure(error, background = false) {
+  recordDiagnostic(background ? "sync" : "action", error);
+  let status = document.querySelector("#connection-status");
+  if (!status) {
+    status = el("p", undefined, "connection-status");
+    status.id = "connection-status";
+    status.setAttribute("role", "status");
+    root.before(status);
+  }
+  status.textContent = error.status === 401 ? "Войдите в Яндекс снова" : background ? "Синхронизация отложена" : "Не удалось выполнить действие";
+  status.hidden = false;
+}
 function clearNetworkNotice() {
+  const status = document.querySelector("#connection-status");
+  if (status) status.hidden = true;
   if (notice.dataset.network !== "true") return;
   notice.hidden = true;
   notice.dataset.network = "false";
@@ -3788,7 +3833,7 @@ async function operate(fn, label = "Подождите…") {
       teacher = null;
     }
     if (e.retry) retryAt = Date.now() + e.retry;
-    showError(e.message ?? "Не удалось выполнить действие", e.network || !!e.retry || e instanceof TeacherExchangeWarning);
+    reportFailure(e);
   } finally {
     root.inert = false;
     working = false;
@@ -3824,6 +3869,7 @@ function modal(title, content, actions) {
   dialog.showModal();
 }
 function logout() {
+  if (exchange.state.role !== "teacher" && exchange.pendingConnection()) { showError("Ожидаем подключения у преподавателя"); return; }
   if (exchange.state.role === "teacher") {
     modal(
       "Выйти из Яндекса?",
@@ -3919,10 +3965,11 @@ function renderWelcome() {
     card.append(icon("next"));
     cards.append(card);
   }
-  main.append(cards, el("p", "Версия 0.3.0", "app-version"));
+  main.append(cards, el("p", "Версия 0.3.0", "app-version"),button("Скачать логи",downloadLogs,"text-button"));
   root.replaceChildren(header, main);
 }
 function leaveTable() {
+  if (exchange.pendingConnection()) { showError("Ожидаем подключения у преподавателя"); return; }
   modal(
     "Выйти из группы?",
     el(
@@ -4089,6 +4136,8 @@ function render() {
   const logged = !!exchange.state.token,
     p = exchange.state.active,
     view = pendingView(p);
+  if (logged && exchange.state.role !== "teacher" && exchange.pendingConnection() && !history.state?.attendancePending)
+    history.pushState({...history.state, attendancePending: true}, "");
   if (!logged) {
     renderWelcome();
     return;
@@ -4252,7 +4301,7 @@ function render() {
       el("p", p.enrollment?.newName ?? p.name ?? ""),
       el(
         "div",
-        "Заявка отправлена. Подключение завершится, когда преподаватель откроет приложение или сайт и завершится синхронизация.",
+        "Ожидаем подключения у преподавателя. Выход станет доступен после обработки заявки.",
         "waiting",
       ),
     );
@@ -4308,6 +4357,7 @@ function render() {
   }
   if (p?.enrollment && !p.viewUrl && !view) main.append(button("Удалить незавершённое подключение", cancelPending, "text-button"));
   const footer = el("footer", undefined, "bottom-bar");
+  footer.append(button("Скачать логи", downloadLogs, "text-button"));
   if (logged)
     footer.append(button("Выйти из Яндекса", logout, "text-button", "exit"));
   root.replaceChildren(header, main, footer);
@@ -4390,7 +4440,7 @@ async function poll() {
       }
       if (!exchange.state.active) render();
       if (e.retry) retryAt = Date.now() + e.retry;
-      showError(e.message, true);
+      reportFailure(e, true);
     } finally {
       schedule();
     }
@@ -4404,8 +4454,14 @@ document.addEventListener("visibilitychange", () => {
   else schedule(0);
 });
 addEventListener("online", () => schedule(0));
+addEventListener("popstate", () => {
+  if (exchange?.state.role !== "teacher" && exchange?.pendingConnection()) {
+    history.pushState({...history.state, attendancePending: true}, "");
+    showError("Ожидаем подключения у преподавателя");
+  }
+});
 addEventListener("beforeunload", (e) => {
-  if (dirty || teacherUi.hasChanges()) {
+  if (dirty || teacherUi.hasChanges() || exchange?.pendingConnection()) {
     e.preventDefault();
     e.returnValue = "";
   }
@@ -4421,7 +4477,7 @@ async function boot() {
         exchange.disk = new Disk(exchange.state.token);
       }
     } catch (e) {
-      showError(e.message);
+      reportFailure(e);
     }
     if (exchange.state.token && !exchange.state.role) {
       exchange.state.role = "student";
@@ -4443,10 +4499,12 @@ async function boot() {
     if ("serviceWorker" in navigator)
       navigator.serviceWorker.register("./sw.js").catch(() => {});
   } catch (e) {
+    reportFailure(e);
     root.replaceChildren(el("main", undefined, "boot"));
     root.firstChild.append(
       el("h1", "Не удалось открыть приложение"),
-      el("p", e.message),
+      el("p", "Обновите страницу и повторите попытку"),
+      button("Скачать логи", downloadLogs, "text-button"),
     );
   }
 }
@@ -4500,7 +4558,7 @@ if (!navigator.locks) {
         await holdSession();
       },
     )
-    .catch((e) => showError(e.message));
+    .catch((e) => reportFailure(e));
 
 document.addEventListener("click", (e) => {
   for (const menu of document.querySelectorAll("details[open]"))
