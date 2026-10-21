@@ -246,6 +246,7 @@ class Disk {
     this.reads = new Map();
     this.readPauseUntil = 0;
     this.readBackoff = 60_000;
+    this.readFailures = new Map();
   }
   async fetch(url, options = {}, max = 4_000_000) {
     let response;
@@ -388,8 +389,15 @@ class Disk {
       (await this.api("resources", { path, fields: "public_url" })).public_url,
     );
   }
-  async publicFile(url) {
+  async publicFile(url, maxAge = 0) {
     publicUrl(url);
+    try {
+      const saved = JSON.parse(globalThis.localStorage?.getItem('attendance-public-read-pause') ?? 'null');
+      if (saved && Number.isFinite(saved.until) && saved.until > Date.now() - 86_400_000 && saved.until <= Date.now() + 86_400_000) {
+        this.readPauseUntil = Math.max(this.readPauseUntil, saved.until);
+        if (Number.isFinite(saved.backoff)) this.readBackoff = Math.max(this.readBackoff, Math.min(900_000, saved.backoff));
+      }
+    } catch {}
     const pause = Math.max(this.readPauseUntil, this.pauses.get(url) ?? 0);
     if (pause > Date.now())
       throw new DiskError(
@@ -397,6 +405,10 @@ class Disk {
         "Яндекс ограничил чтение. Повторим автоматически",
         pause - Date.now(),
       );
+    const failure = this.readFailures.get(url);
+    if (failure?.until > Date.now()) throw failure.error;
+    const cached = this.cache.get(url);
+    if (maxAge > 0 && cached?.checkedAt + maxAge > Date.now()) return cached.bytes;
     if (this.reads.has(url)) return this.reads.get(url);
     const read = this.readPublicFile(url);
     this.reads.set(url, read);
@@ -411,7 +423,10 @@ class Disk {
       });
       ensure(meta.size <= 4_000_000);
       if (meta.md5 && this.cache.get(url)?.md5 === meta.md5) {
+        this.cache.get(url).checkedAt = Date.now();
+        this.readFailures.delete(url);
         this.readBackoff = 60_000;
+        this.clearExpiredReadPause();
         return this.cache.get(url).bytes;
       }
       const bytes = await this.downloadFile("public/resources/download", {public_key: url});
@@ -420,19 +435,33 @@ class Disk {
         this.cache.delete(url);
         while (this.cache.size && [...this.cache.values()].reduce((n, item) => n + item.bytes.length, bytes.length) > 16_000_000)
           this.cache.delete(this.cache.keys().next().value);
-        this.cache.set(url, { md5: meta.md5, bytes });
+        this.cache.set(url, { md5: meta.md5, bytes, checkedAt: Date.now() });
       }
+      this.readFailures.delete(url);
       this.readBackoff = 60_000;
+      this.clearExpiredReadPause();
       return bytes;
     } catch (e) {
       if (e.status === 429) {
         e.retry = Math.max(e.retry || 0, this.readBackoff);
         this.readPauseUntil = Date.now() + e.retry;
         this.readBackoff = Math.min(e.retry * 2, 900_000);
+        try { globalThis.localStorage?.setItem('attendance-public-read-pause', JSON.stringify({until:this.readPauseUntil,backoff:this.readBackoff})); } catch {}
+      }
+      if (e.network || [403,404,500,502,503,504].includes(e.status)) {
+        this.readFailures.delete(url);
+        if (this.readFailures.size >= 500) this.readFailures.delete(this.readFailures.keys().next().value);
+        this.readFailures.set(url, {error:e,until:Date.now()+30_000});
       }
       if (e.retry) this.pauses.set(url, Date.now() + e.retry);
       throw e;
     }
+  }
+  clearExpiredReadPause() {
+    try {
+      const saved = JSON.parse(globalThis.localStorage?.getItem('attendance-public-read-pause') ?? 'null');
+      if (saved?.until <= Date.now()) globalThis.localStorage?.removeItem('attendance-public-read-pause');
+    } catch {}
   }
   async verifyUpload(path, bytes) {
     ensure(
@@ -636,7 +665,7 @@ function requireSameStudent(p, rowId, name) {
 
 // exchange
 function studentSyncDelay(profile) {
-  return profile?.enrollment || profile?.feed?.requests.some(r => !(r.id in (profile.view?.receipts ?? {}))) ? 5_000 : 15_000;
+  return profile?.enrollment || profile?.feed?.requests.some(r => !(r.id in (profile.view?.receipts ?? {}))) ? 15_000 : 30_000;
 }
 class Exchange {
   constructor(vault, state) { this.vault = vault; this.state = state; this.disk = new Disk(state.token); }
@@ -743,7 +772,7 @@ class Exchange {
     }
     if (p.enrollment) {
       const pending = p.enrollment, group = pending.invitation; let responses = {};
-      try { responses = JSON.parse(text(await this.disk.publicFile(group.responseUrl))); }
+      try { responses = JSON.parse(text(await this.disk.publicFile(group.responseUrl, 15_000))); }
       catch (e) { if (pending.sent || ![404, 429].includes(e.status)) throw e; }
       if (responses[pending.studentId]) {
         let reply; try { reply = JSON.parse(text(await openPeer(p.key, unb64(responses[pending.studentId])))); } catch { if (!pending.newName || pending.sent) throw new Error('Строка уже выбрана на другом устройстве'); }
@@ -762,11 +791,11 @@ class Exchange {
     }
     const bytes = utf8.encode(JSON.stringify(p.feed)), revision = await hash(bytes);
     if (revision !== p.feedHash) { const sealed = await sealPeer(p.key, bytes); await this.disk.upload(p.requestPath, sealed, true); await this.disk.verifyUpload(p.requestPath, sealed); p.feedHash = revision; await this.save(); }
-    if (p.viewUrl) p.view = await this.readView(p); await this.save();
+    if (p.viewUrl) p.view = await this.readView(p, 30_000); await this.save();
   }
-  async readView(p) {
+  async readView(p, maxAge = 0) {
     let v;
-    try { v = JSON.parse(text(await openPeer(p.key, await this.disk.publicFile(p.viewUrl)))); }
+    try { v = JSON.parse(text(await openPeer(p.key, await this.disk.publicFile(p.viewUrl, maxAge)))); }
     catch (e) { if (e.status === 404) return this.unavailable(p); throw e; }
     ensure(v.bookId === p.bookId && v.studentId === p.studentId);
     if (v.removed) return this.unavailable(p);
@@ -2242,7 +2271,7 @@ class Teacher {
             text(
               await openPeer(
                 peer.key,
-                await this.disk.publicFile(peer.requestUrl),
+                await this.disk.publicFile(peer.requestUrl, 30_000),
               ),
             ),
           ),
@@ -4226,7 +4255,7 @@ function render() {
     swatch.append(svg);
   }
 }
-function schedule(delay = exchange?.state.role === "teacher" ? 2000 : studentSyncDelay(exchange?.state.active)) {
+function schedule(delay = exchange?.state.role === "teacher" ? 10000 : studentSyncDelay(exchange?.state.active)) {
   clearTimeout(timer);
   if (!document.hidden && exchange?.state.token)
     timer = setTimeout(poll, Math.max(delay, retryAt - Date.now()));
