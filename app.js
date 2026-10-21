@@ -131,6 +131,14 @@ function pendingView(profile) {
   return recalc(v);
 }
 
+function enrollmentReply(response) {
+  // Older teachers persisted a temporary device lease failure as an enrollment rejection.
+  if (typeof response.error === 'string' && response.error.startsWith('Редактирование открыто')) return null;
+  ensure(!response.error, response.error);
+  ensure(typeof response.reply === 'string' && response.reply.length > 0, 'Повреждён ответ преподавателя');
+  return response.reply;
+}
+
 
 // vault
 const request = (r) =>
@@ -589,7 +597,7 @@ class Exchange {
       const responses = JSON.parse(text(await this.disk.publicFile(p.enrollment.invitation.responseUrl)));
       if (responses[p.enrollment.studentId]) {
         const reply = JSON.parse(text(await openPeer(p.key, unb64(responses[p.enrollment.studentId]))));
-        ensure(!reply.error, reply.error); ensure(reply.reply); await this.accept(reply.reply, p);
+        const code = enrollmentReply(reply); if (code) await this.accept(code, p);
       }
     }
     if (p.viewUrl) {
@@ -649,7 +657,7 @@ class Exchange {
       catch (e) { if (pending.sent || ![404, 429].includes(e.status)) throw e; }
       if (responses[pending.studentId]) {
         let reply; try { reply = JSON.parse(text(await openPeer(p.key, unb64(responses[pending.studentId])))); } catch { if (!pending.newName || pending.sent) throw new Error('Строка уже выбрана на другом устройстве'); }
-        if (reply) { ensure(!reply.error, reply.error); ensure(reply.reply); await this.accept(reply.reply); }
+        if (reply) { const code = enrollmentReply(reply); if (code) await this.accept(code); else { pending.sent = true; await this.save(); } }
       }
       if (p.enrollment && !pending.sent) {
         ensure(Date.now() < group.expires, 'Приглашение истекло. Попросите новое');
