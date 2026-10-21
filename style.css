@@ -8,7 +8,7 @@
 .topbar:has(.book-picker){min-height:72px}.brand:has(.book-picker){flex:1}.brand .book-picker{border:0;font-weight:650;padding:8px 24px 8px 0;min-height:44px;max-width:360px}.table-status{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.table-status .delivery{margin:0;text-align:right;font-size:.8rem}.teacher-main>.field{margin-bottom:8px}.teacher-main .tabs{margin-bottom:16px}.journal-search>span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}.teacher-main .journal-search{margin-bottom:8px}.teacher-main .invitation-block{margin-top:16px;padding-bottom:0;border-bottom:0;margin-bottom:16px}.teacher-main .week-actions{margin-bottom:20px}.teacher-main .section-heading{margin-top:16px;margin-bottom:12px}.teacher-main .filter-bar{margin-bottom:12px}
 @media(max-width:600px){.table-status{gap:8px}.table-status>.text-button{padding-inline:0;font-size:.85rem;gap:6px}.table-status .delivery{max-width:50%;font-size:.75rem}.teacher-controls .weeks{margin-top:0;margin-bottom:12px}.teacher-main .filter-chip{font-size:.78rem;min-height:40px;padding:8px 10px}.brand .book-picker{font-size:.95rem}.teacher-main .week-actions>button{min-height:52px}.teacher-main .section-heading>.text-button{font-size:.8rem}}
 .teacher-main .row-counts small{font-size:.875rem}.teacher-main .filter-chip{min-height:44px;font-size:.875rem}@media(max-width:600px){.teacher-main .section-heading>.text-button{font-size:.875rem}.teacher-main .filter-chip{min-height:44px;font-size:.8125rem}}
-.row-name{display:flex;align-items:center;gap:6px;min-width:0}.connection-badge{display:inline-flex;flex:none;color:var(--primary)}.connection-badge svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.row-name{display:flex;align-items:center;gap:6px;min-width:0}
 
 .attendance-scroll{overflow:auto;max-width:100%;border:1px solid var(--line);border-radius:12px;scrollbar-color:var(--muted) var(--bg)}
 .attendance-grid{border-collapse:separate;border-spacing:0;width:100%;font-variant-numeric:tabular-nums;font-size:.875rem}
@@ -18,7 +18,7 @@
 .grid-name{display:flex;align-items:center;gap:4px}.student-name-link{border:0;padding:4px;text-align:left;justify-content:flex-start;font-weight:500;flex:1;min-width:0;color:var(--ink)}
 .grid-mark{min-height:76px;width:100%;padding:4px;border:0;display:flex;flex-direction:column;gap:3px;font-size:.8rem}.grid-mark small{font-size:.7rem;max-width:100px;line-height:1.25}.grid-mark .swatch{width:14px;height:14px}.grid-total{white-space:nowrap;font-weight:600}
 .category-statistics{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 24px;max-width:520px}.category-statistics dd{margin:0;font-variant-numeric:tabular-nums}.attendance-summary{padding-block:12px;margin-block:12px;border-block:1px solid var(--line)}
-@media(max-width:600px){.attendance-grid tr>:first-child{min-width:164px;width:164px}.attendance-grid th,.attendance-grid td{padding:4px}.grid-name{gap:0}.student-name-link{font-size:.8rem}.attendance-grid .connection-badge{width:14px}.attendance-grid .connection-badge .icon{width:14px}}
+@media(max-width:600px){.attendance-grid tr>:first-child{min-width:164px;width:164px}.attendance-grid th,.attendance-grid td{padding:4px}.grid-name{gap:0}.student-name-link{font-size:.8rem}}
 
 
 .attendance-scroll{max-height:65dvh;min-height:240px;overscroll-behavior-x:contain;border-radius:8px;border-top:0}
@@ -53,7 +53,6 @@
   .attendance-grid .grid-student-name{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
   .attendance-grid .grid-counts{gap:2px 8px}
   .attendance-grid .grid-counts>strong{font-size:.9375rem}
-  .attendance-grid .grid-counts>span:not(.connection-badge){font-size:.75rem;flex-basis:100%}
   .attendance-grid .grid-mark{min-height:88px;padding:8px 4px;gap:5px}
   .attendance-grid .grid-mark small{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;font-size:.75rem}
   .grid-mark .grid-add{display:block;width:18px;height:18px;color:var(--muted)}.grid-empty-label{display:none}
@@ -62,7 +61,7 @@
 /* One roster, with a compact phone view and an optional full grid. */
 .student-list{list-style:none;margin:0;padding:0}.student-list>li{display:flex;align-items:flex-start;gap:8px;border-bottom:1px solid var(--line)}.student-list>li>.row-menu{margin-top:4px}
 .student-list-open{flex:1;min-width:0;display:flex;flex-direction:column;align-items:stretch;gap:6px;border:0;border-radius:0;padding:14px 4px;text-align:left;color:var(--ink)}
-.student-list-name{font-size:1rem;font-weight:500;line-height:1.4;overflow-wrap:anywhere}.student-list-name .connection-badge{display:inline-flex;margin-left:8px;vertical-align:middle}
+.student-list-name{font-size:1rem;font-weight:500;line-height:1.4;overflow-wrap:anywhere}
 .student-list-counts{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:baseline;font-size:.875rem;font-weight:400;color:var(--muted);font-variant-numeric:tabular-nums}.student-list-counts strong{color:var(--ink);font-size:1rem}
 .student-menu-trigger{min-width:44px;min-height:44px;padding:10px;border:0;border-radius:8px;background:transparent}.student-menu-trigger svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round}
 .student-menu-trigger:hover,.student-menu-trigger[aria-expanded=true]{background:var(--tonal)}

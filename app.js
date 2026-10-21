@@ -2761,12 +2761,6 @@ function teacherInterface(api) {
         "text-button danger",
       ),
     );
-    if (service().registry(bookId).teachers.some((p) => p.studentId === row.id))
-      actions.insertBefore(button("Отключить", () => {
-        dismiss();
-        confirmStudent("Отключить студента?", row.name, () =>
-          run(() => service().disconnect(bookId, row.id)), "Отключить");
-      }, "text-button danger"), actions.lastElementChild);
     menu.append(summary, actions);
     return menu;
   }
@@ -3038,12 +3032,10 @@ function teacherInterface(api) {
         .filter(row => !below || row.stats.remaining>0);
       if(deficit) visible.sort((a,b) => b.stats.remaining-a.stats.remaining);
       const openStudent=row=>{writeNavigation();detail={studentId:row.id,sheetId:sheet.id,week,wholeSheet,scroll:scrollY};writeNavigation(true);render();scrollTo(0,0);};
-      const linked=row=>service().registry(b.id).teachers.some(p=>p.studentId===row.id);
       if(!fullTable) {
         const list=el("ul",undefined,"student-list");rows.append(list);
         for(const row of visible) {
           const item=el("li"),open=button("",()=>openStudent(row),"student-list-open"),name=el("span",row.name,"student-list-name"),counts=el("span",undefined,"student-list-counts");
-          if(linked(row)){const badge=el("span",undefined,"connection-badge");badge.setAttribute("aria-label","Подключён к группе");badge.append(icon("linked"));name.append(badge);}
           counts.append(el("strong",row.stats.completed+" / "+row.stats.norm),el("span","Бонусы: "+row.balance));
           open.append(name,counts);item.append(open,studentMenu(row));list.append(item);
         }
@@ -3061,9 +3053,6 @@ function teacherInterface(api) {
         open.append(el("span",row.name,"grid-student-name"));
         const nameWrap=el("div",undefined,"grid-name");nameWrap.append(open,studentMenu(row));
         const counts=el("span",undefined,"grid-counts");counts.append(el("strong",row.stats.completed+" / "+row.stats.norm),el("span","Бонусы: "+row.balance));
-        if(linked(row)) {
-          const badge=el("span",undefined,"connection-badge");badge.title="Подключён к группе";badge.setAttribute("aria-label","Подключён к группе");badge.append(icon("linked"));counts.insertBefore(badge,counts.lastChild);
-        }
         open.append(counts);nameCell.append(nameWrap);tr.append(nameCell);
         if(wholeSheet) {
           const view=teacherView(source,row.id);
