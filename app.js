@@ -155,6 +155,7 @@ function enrollmentResponses(group) {
   return {...group.responses,...(Object.keys(group.retryUploads??{}).length?{_retry:group.retryUploads}:{})};
 }
 function pendingEnrollmentRetry(pending, responses, now=Date.now()) {
+  if(!pending.sent)return null;
   const retry=responses._retry?.[pending.studentId];
   if(!retry)return null;
   validateEnrollmentRetry(retry);
@@ -800,7 +801,7 @@ class Exchange {
         let reply; try { reply = JSON.parse(text(await openPeer(p.key, unb64(responses[pending.studentId])))); } catch { if (!pending.newName || pending.sent) throw new Error('Строка уже выбрана на другом устройстве'); }
         if (reply) { const code = enrollmentReply(reply); if (code) await this.accept(code); else { pending.sent = true; await this.save(); } }
       }
-      if(p.enrollment) {
+      if(p.enrollment && pending.sent) {
         const retry=pendingEnrollmentRetry(pending,responses);
         if(retry) {
           try {await this.disk.send(retry.uploadUrl,utf8.encode(pending.encrypted));}
