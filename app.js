@@ -443,9 +443,10 @@ class Disk {
       return bytes;
     } catch (e) {
       if (e.status === 429) {
-        e.retry = Math.max(e.retry || 0, this.readBackoff);
+        const alreadyPaused = this.readPauseUntil > Date.now();
+        e.retry = Math.max(e.retry || 0, alreadyPaused ? this.readPauseUntil - Date.now() : this.readBackoff);
         this.readPauseUntil = Date.now() + e.retry;
-        this.readBackoff = Math.min(e.retry * 2, 900_000);
+        if (!alreadyPaused) this.readBackoff = Math.min(e.retry * 2, 900_000);
         try { globalThis.localStorage?.setItem('attendance-public-read-pause', JSON.stringify({until:this.readPauseUntil,backoff:this.readBackoff})); } catch {}
       }
       if (e.network || [403,404,500,502,503,504].includes(e.status)) {
