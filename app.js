@@ -131,9 +131,12 @@ function pendingView(profile) {
   return recalc(v);
 }
 
+function temporaryEnrollmentError(error) {
+  return typeof error === 'string' && (error.startsWith('Редактирование открыто') || error.startsWith('Не удалось связаться с Яндексом.'));
+}
 function enrollmentReply(response) {
-  // Older teachers persisted a temporary device lease failure as an enrollment rejection.
-  if (typeof response.error === 'string' && response.error.startsWith('Редактирование открыто')) return null;
+  // Older teachers persisted temporary device or network failures as permanent rejections.
+  if (temporaryEnrollmentError(response.error)) return null;
   ensure(!response.error, response.error);
   ensure(typeof response.reply === 'string' && response.reply.length > 0, 'Повреждён ответ преподавателя');
   return response.reply;
@@ -511,6 +514,26 @@ class Disk {
 
 // student-binding
 
+async function readStudentFeed(disk, p) {
+  try { return await disk.download(p.requestPath); }
+  catch (error) {
+    if (!(error.storageUnavailable || error.network) || !p.enrollment || p.viewUrl || p.revoked || p.feed.requests.length) throw error;
+    const empty = utf8.encode(JSON.stringify({peerId:p.peerId, requests:[]}));
+    const before = await disk.api('resources', {path:p.requestPath, fields:'size,sha256'});
+    // Only the initial empty feed has this size; never replace attendance or an accepted connection.
+    if (before.size !== empty.length + 28 || !/^[a-f0-9]{64}$/i.test(before.sha256 ?? '')) throw error;
+    const bookId = p.enrollment.invitation.bookId;
+    const current = validateStudentBinding(JSON.parse(text(await disk.download(studentBindingPath(bookId)))), bookId);
+    if (current.peerId !== p.peerId || current.key !== p.key || !current.enrollment || current.viewUrl || current.revoked) throw error;
+    const latest = await disk.api('resources', {path:p.requestPath, fields:'size,sha256'});
+    if (latest.sha256 !== before.sha256 || latest.size !== before.size) throw error;
+    const bytes = await sealPeer(p.key, empty);
+    await disk.upload(p.requestPath, bytes, true);
+    await disk.verifyUpload(p.requestPath, bytes);
+    return bytes;
+  }
+}
+
 function studentBindingPath(bookId) {
   ensure(typeof bookId === 'string' && /^[A-Za-z0-9-]{1,80}$/.test(bookId));
   return `disk:/Посещаемость-обмен/студент-${bookId}.json`;
@@ -529,7 +552,7 @@ async function readStudentBinding(disk, bookId) {
   try { bytes = await disk.download(studentBindingPath(bookId)); } catch (e) { if (e.status === 404) return null; throw e; }
   const p = validateStudentBinding(JSON.parse(text(bytes)), bookId);
   if (p.revoked) { p.bindingHash = await hash(bytes); return p; }
-  const feed = JSON.parse(text(await openPeer(p.key, await disk.download(p.requestPath))));
+  const feed = JSON.parse(text(await openPeer(p.key, await readStudentFeed(disk, p))));
   ensure(feed.peerId === p.peerId && Array.isArray(feed.requests) && feed.requests.length <= 2000, 'Повреждены изменения студента');
   p.feed = feed; p.feedHash = await hash(JSON.stringify(feed)); p.bindingHash = await hash(bytes);
   return p;
@@ -578,7 +601,7 @@ class Exchange {
   async restore() {
     if (this.state.active || !this.state.token || this.state.chooseTable) return;
     for (const profile of this.state.saved.filter(p => !p.revoked)) {
-      let bytes; try { bytes = await this.disk.download(profile.requestPath); } catch (e) { if (e.status === 404) continue; throw e; }
+      let bytes; try { bytes = await readStudentFeed(this.disk, profile); } catch (e) { if (e.status === 404) continue; throw e; }
       ensure(JSON.parse(text(await openPeer(profile.key, bytes))).peerId === profile.peerId);
       this.state.active = profile; this.state.saved = this.state.saved.filter(p => p.peerId !== profile.peerId); await this.save(); return;
     }
@@ -593,7 +616,7 @@ class Exchange {
       if (remote.revoked) { await this.retire(p); return []; }
       profiles.push(p);
     } else for (const p of this.state.saved.filter(p => !p.revoked && (p.bookId ?? p.enrollment?.invitation?.bookId) === bookId && (p.viewUrl || p.enrollment?.sent))) {
-      let bytes; try { bytes = await this.disk.download(p.requestPath); } catch (e) { if (e.status === 404) continue; throw e; }
+      let bytes; try { bytes = await readStudentFeed(this.disk, p); } catch (e) { if (e.status === 404) continue; throw e; }
       ensure(JSON.parse(text(await openPeer(p.key, bytes))).peerId === p.peerId, 'Не удалось проверить сохранённое подключение'); profiles.push(p);
     }
     for (const p of profiles) if (await this.savedAvailable(p)) { await writeStudentBinding(this.disk, p); return [p]; }
@@ -658,6 +681,10 @@ class Exchange {
   async sync() {
     const p = this.state.active; if (!p || !this.state.token) return;
     await writeStudentBinding(this.disk, p);
+    this.checkedPendingFeeds ??= new Set();
+    if (p.enrollment && !this.checkedPendingFeeds.has(p.peerId)) {
+      await readStudentFeed(this.disk, p); this.checkedPendingFeeds.add(p.peerId);
+    }
     if (p.enrollment) {
       const pending = p.enrollment, group = pending.invitation; let responses = {};
       try { responses = JSON.parse(text(await this.disk.publicFile(group.responseUrl))); }
@@ -1996,7 +2023,7 @@ class Teacher {
         try { request = await this.enrollment(g, await this.disk.download(g.folder + "/заявки/" + rowId + ".json")); }
         catch (e) { if (e.status === 404) continue; throw e; }
         const response = JSON.parse(text(await openPeer(request.invite.key, unb64(encoded))));
-        if (response.error?.startsWith("Редактирование открыто")) {
+        if (temporaryEnrollmentError(response.error)) {
           delete g.responses[rowId]; if(g.responsePeers) delete g.responsePeers[rowId]; g.collected = false; await this.save();
         } else this.checkedEnrollmentErrors.add(encoded);
       }
@@ -2037,7 +2064,7 @@ class Teacher {
             );
             ensure(req.studentId === row.id);
           } catch (e) {
-            if (e.status || e.retry) throw e;
+            if (e.status || e.retry || e.network || e.name === "TypeError") throw e;
             g.responses[row.id] = "";
             continue;
           }
@@ -2104,7 +2131,7 @@ class Teacher {
           } catch (e) {
             if (
               (e.status && ![400, 404, 410].includes(e.status)) ||
-              e.retry ||
+              e.retry || e.network ||
               e.name === "TypeError"
             )
               throw e;
