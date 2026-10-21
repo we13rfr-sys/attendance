@@ -277,7 +277,7 @@ class Disk {
         ...options,
         credentials: "omit",
         referrerPolicy: "no-referrer",
-        signal: AbortSignal.timeout(30_000),
+        signal: options.signal ?? AbortSignal.timeout(30_000),
       });
     } catch {
       throw Object.assign(new Error(
@@ -334,7 +334,7 @@ class Disk {
     }
     return result;
   }
-  async api(endpoint, params = {}, method = "GET", body) {
+  async api(endpoint, params = {}, method = "GET", body, signal) {
     const url = new URL("https://cloud-api.yandex.net/v1/disk/" + endpoint);
     Object.entries(params).forEach(([k, v]) =>
       url.searchParams.set(k, String(v)),
@@ -345,10 +345,17 @@ class Disk {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal,
     });
     return bytes.length ? JSON.parse(new TextDecoder().decode(bytes)) : {};
   }
   async download(path, max = 4_000_000) {
+    if (/^disk:\/Посещаемость-обмен\/приглашение-[A-Za-z0-9-]+\/заявки\/[A-Za-zА-Яа-я0-9-]+\.json$/.test(path)) {
+      // A stalled request is recovered via a new file, not another long download of the same one.
+      const signal = AbortSignal.timeout(10_000);
+      const ticket = await this.api("resources/download", {path}, "GET", undefined, signal);
+      return this.fetch(transferUrl(ticket.href), {cache: "no-store", signal}, Math.min(max, 16_000));
+    }
     return this.downloadFile("resources/download", {path}, max);
   }
   async downloadFile(endpoint, params, max = 4_000_000) {
@@ -2125,7 +2132,7 @@ class Teacher {
       text(
         await openPeer(
           invite.key,
-          await this.disk.publicFile(invite.requestUrl),
+          await this.disk.publicFile(invite.requestUrl, 30_000),
         ),
       ),
     );
@@ -2223,7 +2230,7 @@ class Teacher {
                 text(
                   await openPeer(
                     req.invite.key,
-                    await this.disk.publicFile(req.invite.requestUrl),
+                    await this.disk.publicFile(req.invite.requestUrl, 30_000),
                   ),
                 ),
               );
@@ -2536,7 +2543,6 @@ class Teacher {
         await this.disk.upload(destination, output, true);
         await this.disk.verifyUpload(destination, output);
       } catch(e) {if(await this.automaticRecovery(id,e))return this.syncBook(id);throw e;}
-      await this.device.publishBook({...b, diskPath:destination});
       const current = this.get(id);
       Object.assign(current, {
         remoteHash: await hexHash(output),
