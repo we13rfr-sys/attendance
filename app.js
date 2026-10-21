@@ -552,7 +552,10 @@ async function readStudentBinding(disk, bookId) {
   try { bytes = await disk.download(studentBindingPath(bookId)); } catch (e) { if (e.status === 404) return null; throw e; }
   const p = validateStudentBinding(JSON.parse(text(bytes)), bookId);
   if (p.revoked) { p.bindingHash = await hash(bytes); return p; }
-  const feed = JSON.parse(text(await openPeer(p.key, await readStudentFeed(disk, p))));
+  let feedBytes;
+  try { feedBytes = await readStudentFeed(disk, p); }
+  catch (e) { if (e.status === 404 && p.enrollment && !p.viewUrl) return null; throw e; }
+  const feed = JSON.parse(text(await openPeer(p.key, feedBytes)));
   ensure(feed.peerId === p.peerId && Array.isArray(feed.requests) && feed.requests.length <= 2000, 'Повреждены изменения студента');
   p.feed = feed; p.feedHash = await hash(JSON.stringify(feed)); p.bindingHash = await hash(bytes);
   return p;
@@ -566,14 +569,21 @@ async function writeStudentBinding(disk, p) {
   const bytes = utf8.encode(JSON.stringify(record)), revision = await hash(bytes), path = studentBindingPath(bookId);
   if (revision === p.bindingHash) return;
   if (p.bindingHash) {
-    const old = validateStudentBinding(JSON.parse(text(await disk.download(path))), bookId);
-    ensure(old.peerId === p.peerId && old.key === p.key, 'Привязка аккаунта изменилась на другом устройстве. Откройте приглашение заново');
+    try {
+      const old = validateStudentBinding(JSON.parse(text(await disk.download(path))), bookId);
+      ensure(old.peerId === p.peerId && old.key === p.key, 'Привязка аккаунта изменилась на другом устройстве. Откройте приглашение заново');
+    } catch (e) { if (e.status !== 404) throw e; p.bindingHash = null; }
   }
   try { await disk.upload(path, bytes, !!p.bindingHash); }
   catch (e) {
     if (e.status !== 409) throw e;
     const old = validateStudentBinding(JSON.parse(text(await disk.download(path))), bookId);
-    ensure(old.revoked || (old.peerId === p.peerId && old.key === p.key), 'Этот аккаунт уже подключён к другой строке этой таблицы. Обратитесь к преподавателю');
+    let abandoned = false;
+    if (old.enrollment && !old.viewUrl) {
+      try { await disk.download(old.requestPath); }
+      catch (missing) { if (missing.status !== 404) throw missing; abandoned = true; }
+    }
+    ensure(old.revoked || abandoned || (old.peerId === p.peerId && old.key === p.key), 'Этот аккаунт уже подключён к другой строке этой таблицы. Обратитесь к преподавателю');
     await disk.upload(path, bytes, true);
   }
   p.bindingHash = revision;
@@ -637,7 +647,15 @@ class Exchange {
     return true;
   }
   async resumeInvited(group, rowId, name) {
-    const active = this.state.active;
+    let active = this.state.active;
+    if (active?.enrollment?.invitation.bookId === group.bookId && !active.viewUrl) {
+      try { await readStudentFeed(this.disk, active); }
+      catch (e) {
+        if (e.status !== 404) throw e;
+        active.revoked = true; this.state.saved = [active, ...this.state.saved.filter(p => p.peerId !== active.peerId)];
+        this.state.active = null; active = null; await this.save();
+      }
+    }
     const p = active && (active.bookId ?? active.enrollment?.invitation?.bookId) === group.bookId ? active : (await this.ownedSaved(group.bookId))[0];
     if (!p) return false;
     if (p === active && !await this.savedAvailable(p)) return false;
@@ -1320,7 +1338,7 @@ class TeacherDevice {
     catch (e) {
       if (e.status !== 404) {
         this.writable = false;
-        if (globalThis.document?.hidden || !(e.status >= 500 && e.status <= 504)) throw e;
+        if (globalThis.document?.hidden || !(e.network || (e.status >= 500 && e.status <= 504))) throw e;
         const metadata = await this.disk.api('resources', {path:teacherLeasePath, fields:'type,modified'});
         // A 20-second lease cannot keep blocking devices after a minute without a write.
         if (metadata.type !== 'file' || !expiredUnreadableTeacherLease(metadata.modified, now)) throw e;
@@ -1355,6 +1373,9 @@ class TeacherDevice {
 // teacher
 
 const teacherFolder = "disk:/Посещаемость-обмен";
+class TeacherExchangeWarning extends Error {
+  constructor(cause) { super("Журнал сохранён. Не удалось обновить часть подключений студентов: " + cause.message); this.cause = cause; }
+}
 const teacherClean = journalPayload;
 const teacherEqual = (a, b) => {
   if (a === b) return true;
@@ -2014,10 +2035,11 @@ class Teacher {
   }
   async collect(id) {
     const r = this.registry(id);
-    for (const g of [...r.invitations]) {
+    let failure;
+    for (const g of [...r.invitations]) try {
       // Older clients stored a temporary writer lease loss as a permanent enrollment rejection.
       this.checkedEnrollmentErrors ??= new Set();
-      for (const [rowId, encoded] of Object.entries(g.responses)) {
+      for (const [rowId, encoded] of Object.entries(g.responses)) try {
         if (!encoded || g.acknowledged?.includes(rowId) || this.checkedEnrollmentErrors.has(encoded)) continue;
         let request;
         try { request = await this.enrollment(g, await this.disk.download(g.folder + "/заявки/" + rowId + ".json")); }
@@ -2026,7 +2048,7 @@ class Teacher {
         if (temporaryEnrollmentError(response.error)) {
           delete g.responses[rowId]; if(g.responsePeers) delete g.responsePeers[rowId]; g.collected = false; await this.save();
         } else this.checkedEnrollmentErrors.add(encoded);
-      }
+      } catch (e) { failure ??= e; }
       const rows = [
         ...g.invitation.students,
         ...(g.invitation.registrations ?? []),
@@ -2053,7 +2075,7 @@ class Teacher {
             files.some(
               (f) => f.path === g.folder + "/заявки/" + row.id + ".json",
             ),
-        )) {
+        )) try {
           let req;
           try {
             req = await this.enrollment(
@@ -2144,9 +2166,9 @@ class Teacher {
             ),
           );
           await this.save();
-        }
+        } catch (e) { failure ??= e; }
         if (
-          Date.now() > g.invitation.expires + 900_000 ||
+          (Date.now() > g.invitation.expires + 900_000 && rows.every(row => row.id in g.responses || !files.some(f => f.path === g.folder + "/заявки/" + row.id + ".json"))) ||
           Object.keys(g.responses).length === rows.length
         )
           g.collected = true;
@@ -2159,7 +2181,8 @@ class Teacher {
         g.responseHash = h;
         await this.save();
       }
-    }
+    } catch (e) { failure ??= e; }
+    if (failure) throw failure;
   }
   async applyFeeds(id) {
     await this.device.requireWriter();
@@ -2188,6 +2211,7 @@ class Teacher {
         continue;
       }
       const { peer, feed } = entry;
+      try {
       ensure(
         feed.peerId === peer.peerId &&
           Array.isArray(feed.requests) &&
@@ -2243,6 +2267,7 @@ class Teacher {
             if (p === peer.peerId && !g.acknowledged.includes(slot))
               g.acknowledged.push(slot);
         }
+      } catch (e) { error ??= e; }
     }
     await this.save();
     return error;
@@ -2251,7 +2276,9 @@ class Teacher {
     await this.device.requireWriter();
     const b = this.get(id);
     if (b.dirty) return;
+    let failure;
     await teacherBatch(this.registry(id).teachers, async (peer) => {
+      try {
       if (!b.students.some((s) => s.id === peer.studentId)) return;
       const bytes = utf8.encode(
           JSON.stringify(teacherView(b, peer.studentId, peer.peerId)),
@@ -2263,8 +2290,10 @@ class Teacher {
         await this.disk.verifyUpload(peer.viewPath, sealed);
         peer.viewHash = h;
       }
+      } catch (e) { failure ??= e; }
     });
     await this.save();
+    if (failure) throw failure;
   }
   async automaticRecovery(id,error) {
     if(!this.writable)return false;
@@ -2353,9 +2382,11 @@ class Teacher {
     }
     if (!this.writable) return;
     await this.device.requireWriter();
-    await this.refreshInvitations(this.get(id));
-    await this.collect(id);
-    const feedError = await this.applyFeeds(id);
+    let exchangeError;
+    for (const action of [() => this.refreshInvitations(this.get(id)), () => this.collect(id), () => this.applyFeeds(id)]) {
+      try { const warning = await action(); exchangeError ??= warning; }
+      catch (e) { exchangeError ??= e; }
+    }
     b = this.get(id);
     if (b.dirty) {
       await this.device.requireWriter();
@@ -2389,11 +2420,11 @@ class Teacher {
         : "Синхронизировано с Диском";
       await this.save();
     }
-    await this.publishViews(id);
-    await this.cleanup(id);
-    await this.pushRegistry(id);
+    for (const action of [() => this.publishViews(id), () => this.cleanup(id), () => this.pushRegistry(id)]) {
+      try { await action(); } catch (e) { exchangeError ??= e; }
+    }
     this.recoveryAttempts?.get(id)?.reset();
-    if (feedError) throw feedError;
+    if (exchangeError) throw new TeacherExchangeWarning(exchangeError);
   }
   async cleanup(id) {
     const r = this.registry(id);
@@ -2510,6 +2541,7 @@ class Teacher {
           await this.syncBook(b.id);
         } catch (e) {
           if (e.status === 401) throw e;
+          if (e instanceof TeacherExchangeWarning) { failure ??= e; continue; }
           this.get(b.id).status = this.registry(b.id).closed
             ? "Таблица недоступна"
             : this.get(b.id).dirty
