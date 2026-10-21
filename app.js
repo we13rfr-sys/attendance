@@ -1298,7 +1298,7 @@ class TeacherDevice {
     this.writable = lease.owner === this.owner && lease.expires > Date.now(); this.checked = Date.now();
     return this.writable;
   }
-  async requireWriter() { ensure(await this.refresh(true), this.kindOfOwner === 'android' ? 'Редактирование открыто в приложении. На сайте доступен просмотр' : 'Редактирование открыто на другом устройстве. Здесь доступен просмотр'); }
+  async requireWriter() { if (!await this.refresh(true)) throw Object.assign(new Error(this.kindOfOwner === 'android' ? 'Редактирование открыто в приложении. На сайте доступен просмотр' : 'Редактирование открыто на другом устройстве. Здесь доступен просмотр'), {retry:5000}); }
   async catalog() {
     let files;
     try { files = await this.disk.list(exchangeFolder); } catch (e) { if (e.status === 404) return []; throw e; }
@@ -1965,6 +1965,19 @@ class Teacher {
   async collect(id) {
     const r = this.registry(id);
     for (const g of [...r.invitations]) {
+      // Older clients stored a temporary writer lease loss as a permanent enrollment rejection.
+      this.checkedEnrollmentErrors ??= new Set();
+      for (const [rowId, encoded] of Object.entries(g.responses)) {
+        if (!encoded || g.responsePeers?.[rowId] || this.checkedEnrollmentErrors.has(encoded)) continue;
+        let request;
+        try { request = await this.enrollment(g, await this.disk.download(g.folder + "/заявки/" + rowId + ".json")); }
+        catch (e) { if (e.status === 404) continue; throw e; }
+        const response = JSON.parse(text(await openPeer(request.invite.key, unb64(encoded))));
+        if (response.error?.startsWith("Редактирование открыто")) {
+          delete g.responses[rowId]; g.collected = false; await this.save();
+        }
+        this.checkedEnrollmentErrors.add(encoded);
+      }
       const rows = [
         ...g.invitation.students,
         ...(g.invitation.registrations ?? []),
@@ -3988,7 +4001,7 @@ function render() {
       el("p", p.enrollment?.newName ?? p.name ?? ""),
       el(
         "div",
-        "Заявка отправлена. Подключение завершится, когда преподаватель откроет приложение.",
+        "Заявка отправлена. Подключение завершится, когда преподаватель откроет приложение или сайт и завершится синхронизация.",
         "waiting",
       ),
     );
