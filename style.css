@@ -21,7 +21,7 @@
 @media(max-width:600px){.attendance-grid tr>:first-child{min-width:164px;width:164px}.attendance-grid th,.attendance-grid td{padding:4px}.grid-name{gap:0}.student-name-link{font-size:.8rem}.attendance-grid .connection-badge{width:14px}.attendance-grid .connection-badge .icon{width:14px}}
 
 
-.attendance-scroll{max-height:65dvh;min-height:240px;overscroll-behavior:contain;border-radius:8px}
+.attendance-scroll{max-height:65dvh;min-height:240px;overscroll-behavior-x:contain;border-radius:8px}
 .attendance-grid{table-layout:fixed;width:max-content;min-width:100%}
 .attendance-grid th,.attendance-grid td{width:124px;min-width:124px;padding:0;vertical-align:middle}
 .attendance-grid thead th{position:sticky;top:0;z-index:2;padding:10px 6px}
